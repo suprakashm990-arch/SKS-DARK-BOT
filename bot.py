@@ -18,22 +18,20 @@ if not API_ID or not API_HASH or not BOT_TOKEN:
 # API_ID ko integer mein badalna
 API_ID = int(API_ID)
 
-# 🤖 Bot client ko chalu karna (Yahan token direct pass ho raha hai bina confirmation ke)
+# 🤖 Bot client ko chalu karna
 bot = TelegramClient('dynamic_filter_bot', API_ID, API_HASH)
 
 # Dynamic memory space filters ke liye
 APP_LINKS = {}
 
-# 👑 OWNER KA USERNAME (Apna original username yahan @ ke sath likhein)
-OWNER_USERNAME = "@promodsks_bot"
+# 👑 OWNER KI ASLI USER ID (Aapki permanent ID numeric format mein)
+OWNER_ID = 8587571289
 
 # 1. ⚙️ LINK SET/UPDATE COMMAND
 @bot.on(events.NewMessage(pattern=r'/filter (.+?) (https?://\S+)'))
 async def set_filter(event):
-    sender = await event.get_sender()
-    username = f"@{sender.username}" if sender and sender.username else ""
-    
-    if username != OWNER_USERNAME:
+    # Sender ki asli ID check karna
+    if event.sender_id != OWNER_ID:
         await event.reply("❌ Aap is bot ke admin nahi hain!")
         return
         

@@ -25,7 +25,7 @@ bot = TelegramClient('dynamic_filter_bot', API_ID, API_HASH)
 APP_LINKS = {}
 
 # 👑 OWNER KA USERNAME (Apna original username yahan @ ke sath likhein)
-OWNER_USERNAME = "@YAHAN_APNA_TELEGRAM_USERNAME"
+OWNER_USERNAME = "@promodsks_bot"
 
 # 1. ⚙️ LINK SET/UPDATE COMMAND
 @bot.on(events.NewMessage(pattern=r'/filter (.+?) (https?://\S+)'))

@@ -1,18 +1,16 @@
-name: 24/7 Telegram Bot Runner
+name: 24/7 Telegram Bot Runner (Auto-Loop)
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Isse aap jab chahein manually bhi button daba kar bot chalu kar sakte hain
+  workflow_dispatch:
   schedule:
-    # ⏱️ Trick: Yeh cron schedule har 5 ghante mein bot ko naye sirre se automatic chalu karega
-    - cron: '0 */5 * * *'
+    - cron: '0 */5 * * *' # Backup trigger har 5 ghante mein
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    # 🛑 5 Ghante (300 minutes) ka safe timeout, taaki 6 ghante wali GitHub limit se pehle bot khud restart ho jaye
-    timeout-minutes: 300 
+    timeout-minutes: 290 # 4 Ghante 50 minute par safe exit lega
 
     steps:
     - name: Code Checkout
@@ -26,11 +24,22 @@ jobs:
     - name: Libraries Install Karna
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: Bot Chalu Karein
+    - name: Bot Chalu Karein (With Safe Timeout)
       env:
         TG_API_ID: ${{ secrets.TG_API_ID }}
         TG_API_HASH: ${{ secrets.TG_API_HASH }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      run: python bot.py
+      # timeout command se script khud 4 ghante 45 minute baad safely close hogi, jisse failure nahi mana jayega
+      run: |
+        timeout 285m python bot.py || echo "Safe timeout reached, restarting..."
+
+    - name: Automatic Loop Trigger (Bot Ko Dobara Chalu Karna)
+      if: always() # Bot chahe safely band ho ya crash ho, yeh step humesha chalega
+      run: |
+        curl -X POST \
+          -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
+          -d '{"ref":"main"}'

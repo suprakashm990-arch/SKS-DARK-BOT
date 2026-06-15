@@ -3,11 +3,17 @@ name: 24/7 Telegram Bot Runner
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # Isse aap jab chahein manually bhi button daba kar bot chalu kar sakte hain
+  schedule:
+    # ⏱️ Trick: Yeh cron schedule har 5 ghante mein bot ko naye sirre se automatic chalu karega
+    - cron: '0 */5 * * *'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    # 🛑 5 Ghante (300 minutes) ka safe timeout, taaki 6 ghante wali GitHub limit se pehle bot khud restart ho jaye
+    timeout-minutes: 300 
+
     steps:
     - name: Code Checkout
       uses: actions/checkout@v4

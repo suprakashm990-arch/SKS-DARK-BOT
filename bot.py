@@ -27,7 +27,7 @@ bot = TelegramClient('dynamic_filter_bot', API_ID, API_HASH)
 # 👑 OWNER KI ASLI USER ID
 OWNER_ID = 8587571289
 
-# 📂 SQLite Local Database Setup (Post Tracking Ke Liye)
+# 📂 SQLite Local Database Setup
 def init_db():
     conn = sqlite3.connect('posts.db')
     cursor = conn.cursor()
@@ -36,8 +36,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER,
             message_id INTEGER,
-            text TEXT,
-            media_file_id TEXT,
             post_time TIMESTAMP
         )
     ''')
@@ -65,7 +63,6 @@ def save_link_to_firebase(app_name, download_link):
         return False
 
 def get_rotate_time_minutes():
-    """Firebase se rotate karne ka interval nikalna (Default: 720 minutes = 12 hours)"""
     try:
         response = requests.get(f"{FIREBASE_URL}rotate_config/minutes.json")
         if response.status_code == 200 and response.json():
@@ -109,7 +106,7 @@ async def set_rotate_time(event):
     
     minutes = int(event.pattern_match.group(1))
     if save_rotate_time_to_firebase(minutes):
-        await event.reply(f"⏰ **Rotation Time Updated!**\nAb har **{minutes} minutes** baad posts rotate (delete aur repost) honge.")
+        await event.reply(f"⏰ **Rotation Time Updated!**\nAb har **{minutes} minutes** baad posts rotate honge.")
     else:
         await event.reply("❌ Firebase mein time update karne mein error aaya!")
     raise events.StopPropagation
@@ -123,14 +120,13 @@ async def kill_post_handler(event):
         return
         
     if not event.is_reply:
-        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein jise lifetime rotate loop se hatana hai.")
+        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein.")
         return
         
     reply_msg = await event.get_reply_message()
     target_msg_id = reply_msg.id
     target_chat_id = event.chat_id
     
-    # SQLite Database se use permanently uda dena taaki repost na ho
     conn = sqlite3.connect('posts.db')
     cursor = conn.cursor()
     cursor.execute('DELETE FROM auto_posts WHERE chat_id = ? AND message_id = ?', (target_chat_id, target_msg_id))
@@ -138,50 +134,50 @@ async def kill_post_handler(event):
     conn.commit()
     conn.close()
     
-    # Channel se bhi manual message delete kar dena
     try:
         await bot.delete_messages(target_chat_id, target_msg_id)
     except Exception:
         pass
         
     if rows_affected > 0:
-        await event.reply("🗑️ **Lifetime Deleted!** Yeh post ab rotation system se hamesha ke liye hat gaya hai aur dobara repost nahi hoga.")
+        await event.reply("🗑️ **Lifetime Deleted!** Loop se permanent hat gaya hai.")
     else:
-        await event.reply("⚠️ Yeh post bot tracking database mein nahi tha, par channel se delete kar diya gaya hai.")
+        await event.reply("⚠️ Channel se delete kar diya gaya hai.")
     raise events.StopPropagation
 
 
-# 4. 👥 GROUP AUTOMATIC REPLY + NEW MESSAGE TRACKING
-@bot.on(events.NewMessage(incoming=True))
-async def handle_messages(event):
-    message_text = event.raw_text.lower() if event.raw_text else ""
-    
-    # Agar admin ya koi bhi channel mein post karta hai, toh bot rotation database mein save karega
-    if (event.is_channel or event.is_group) and not message_text.startswith('/'):
+# 4. 🚀 CHANNEL POST TRACKING LAYER (Exact Message Tracking)
+@bot.on(events.NewMessage)
+async def track_channel_posts(event):
+    # Sirf channels ya main broadcasting chat ke liye tracker (bina command wale post)
+    if event.is_channel and not event.is_group:
+        if event.text and event.text.startswith('/'):
+            return
+
         chat_id = event.chat_id
         msg_id = event.id
-        text = event.text or ""
-        
-        # Safe structural check for media references
-        media_file_id = None
-        if event.media:
-            media_file_id = event.message.media
 
         conn = sqlite3.connect('posts.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO auto_posts (chat_id, message_id, text, media_file_id, post_time)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (chat_id, msg_id, text, str(media_file_id) if media_file_id else None, datetime.now()))
+            INSERT INTO auto_posts (chat_id, message_id, post_time)
+            VALUES (?, ?, ?)
+        ''', (chat_id, msg_id, datetime.now()))
         conn.commit()
         conn.close()
 
-    if message_text.startswith('/filter'):
+
+# 5. 👥 GROUP AUTOMATIC REPLY ONLY
+@bot.on(events.NewMessage(incoming=True))
+async def handle_group_replies(event):
+    if not event.is_group:
         return
         
-    # Online database se reply match logic execution
+    message_text = event.raw_text.lower() if event.raw_text else ""
+    if message_text.startswith('/'):
+        return
+        
     current_links = load_links_from_firebase()
-    
     for app_name, download_link in current_links.items():
         if app_name in message_text:
             reply_text = (
@@ -193,11 +189,10 @@ async def handle_messages(event):
             break
 
 
-# 🔄 5. BACKGROUND ROTATE LAYER (EXACT TIME BASED REPOST)
+# 🔄 6. BACKGROUND ROTATE LAYER (EXACT IMAGE & CAPTION MATCHING CLONE)
 async def check_and_rotate_posts():
     while True:
         try:
-            # Live custom time pull karna (Firebase)
             interval_minutes = get_rotate_time_minutes()
             time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
             
@@ -207,50 +202,52 @@ async def check_and_rotate_posts():
             old_posts = cursor.fetchall()
             
             for post in old_posts:
-                db_id, chat_id, msg_id, text, media_file_id, post_time = post
+                db_id, chat_id, msg_id, post_time = post
                 
-                # A. Pehle Purana Post Delete Karo
+                # A. Purane original message object ko fetch karna uski styles ke sath
+                original_msg = None
+                try:
+                    original_msg = await bot.get_messages(chat_id, ids=msg_id)
+                except Exception:
+                    pass
+
+                # B. Pehle purana post delete karo
                 try:
                     await bot.delete_messages(chat_id, msg_id)
                 except Exception as e:
-                    logging.info(f"Post already deleted or missing: {e}")
+                    logging.info(f"Post missing: {e}")
 
-                # B. Same content ko instantly repost karna
-                try:
-                    new_msg = None
-                    if media_file_id:
-                        # Re-binding reference check
-                        file_payload = eval(media_file_id) if 'MessageMedia' in media_file_id else media_file_id
-                        new_msg = await bot.send_message(chat_id, text, file=file_payload)
-                    else:
-                        new_msg = await bot.send_message(chat_id, text)
+                # C. Instantly exact copy send karna (Bina formatting chhede)
+                if original_msg:
+                    try:
+                        # Telethon ka send_message jab kisi message object ko leta hai, toh exact clone banata hai
+                        new_msg = await bot.send_message(chat_id, original_msg)
                         
-                    if new_msg:
-                        # C. Base key details ko update karna
-                        cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
-                        cursor.execute('''
-                            INSERT INTO auto_posts (chat_id, message_id, text, media_file_id, post_time)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (chat_id, new_msg.id, text, media_file_id, datetime.now()))
-                        conn.commit()
-                except Exception as e:
-                    logging.error(f"Repost failed: {e}")
+                        if new_msg:
+                            # Database entry refresh karna
+                            cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
+                            cursor.execute('''
+                                INSERT INTO auto_posts (chat_id, message_id, post_time)
+                                VALUES (?, ?, ?)
+                            ''', (chat_id, new_msg.id, datetime.now()))
+                            conn.commit()
+                    except Exception as e:
+                        logging.error(f"Repost failed: {e}")
+                else:
+                    # Agar kisi wajah se message na mile toh entry saaf karo
+                    cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
+                    conn.commit()
                     
             conn.close()
         except Exception as e:
             logging.error(f"Rotation engine error: {e}")
             
-        # Testing loop support ke liye har 10 second mein evaluation runner trigger chalu rahega
         await asyncio.sleep(10)
 
 
-# 🚀 CLIENT START OVERRIDE RUNNER
+# 🚀 CLIENT RUNNER
 async def main():
-    print("🤖 Bot is starting with Firebase Database...")
     await bot.start(bot_token=BOT_TOKEN)
-    print("✅ Bot is successfully running 24/7 with Cloud Database & Auto-Rotate Logic!")
-    
-    # Background thread execution matrix activate karna
     bot.loop.create_task(check_and_rotate_posts())
     await bot.run_until_disconnected()
 

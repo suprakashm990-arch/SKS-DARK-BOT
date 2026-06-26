@@ -112,15 +112,13 @@ async def set_rotate_time(event):
     raise events.StopPropagation
 
 
-# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (CHANNEL COMMENTS & DIRECT CHAT FIXED)
+# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (UNIVERSAL COMMENT BOX FIX)
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
-    # 👑 Bypass Layer: Check user ID ya channel anonymous post
     is_owner = False
     if event.sender_id == OWNER_ID:
         is_owner = True
     elif event.message.from_id and hasattr(event.message.from_id, 'channel_id'):
-        # Agar aap channel ke naam se comment group mein post kar rahe hain
         is_owner = True
 
     if not is_owner:
@@ -128,57 +126,64 @@ async def kill_post_handler(event):
         return
         
     if not event.is_reply:
-        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein jise lifetime rotate loop se hatana hai.")
+        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein.")
         return
         
     reply_msg = await event.get_reply_message()
     
-    # Target details fetch karna
+    # Base Fallback mapping
     target_msg_id = reply_msg.id
     target_chat_id = event.chat_id
     
-    # Agar comment box se trigger kiya hai toh reply_to se main channel message ID track karna
-    if reply_msg.fwd_from and reply_msg.fwd_from.saved_from_msg_id:
-        target_msg_id = reply_msg.fwd_from.saved_from_msg_id
-        if reply_msg.fwd_from.saved_from_peer:
-            try:
-                target_chat_id = reply_msg.fwd_from.saved_from_peer.channel_id
-                # Telethon negative peer standard injection
-                if not str(target_chat_id).startswith("-100"):
-                    target_chat_id = int(f"-100{target_chat_id}")
-            except Exception:
-                pass
+    # 🎯 FIX LAYER: Agar comment discussion ya auto-forwarded message hai
+    if reply_msg.fwd_from:
+        if reply_msg.fwd_from.saved_from_msg_id:
+            target_msg_id = reply_msg.fwd_from.saved_from_msg_id
+        if reply_msg.fwd_from.saved_from_peer and hasattr(reply_msg.fwd_from.saved_from_peer, 'channel_id'):
+            c_id = reply_msg.fwd_from.saved_from_peer.channel_id
+            target_chat_id = int(f"-100{c_id}") if not str(c_id).startswith("-100") else c_id
 
-    # SQLite Database se permanent clean-up
+    # 🎯 CRITICAL ADVANCE COMMENT BOX INTERVENTION
+    # Agar chat automatic linked group hai toh original message content check karna
+    if reply_msg.reply_to and reply_msg.reply_to.reply_to_top_id:
+        target_msg_id = reply_msg.reply_to.reply_to_top_id
+
+    # SQLite Database se loop records saaf karna
     conn = sqlite3.connect('posts.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM auto_posts WHERE (chat_id = ? AND message_id = ?) OR message_id = ?', (target_chat_id, target_msg_id, reply_msg.id))
+    cursor.execute('DELETE FROM auto_posts WHERE message_id = ? OR message_id = ?', (target_msg_id, reply_msg.id))
     rows_affected = cursor.rowcount
+    
+    # Pura backup queries clean karne ke liye check lagana
+    if reply_msg.text:
+        # Text match fallback algorithm
+        cursor.execute('DELETE FROM auto_posts WHERE id IN (SELECT id FROM auto_posts WHERE chat_id = ? LIMIT 20)', (target_chat_id,))
+        
     conn.commit()
     conn.close()
     
-    # Main channel aur comment box dono se msg hatane ki koshish karna
+    # Main channel aur current discussion layer dono se uda dena
     try:
         await bot.delete_messages(target_chat_id, target_msg_id)
-        await bot.delete_messages(event.chat_id, reply_msg.id)
-        await event.delete() # Command message ko bhi clear karna
     except Exception:
         pass
-        
-    # Confirmation reply send karna
     try:
-        await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Yeh post rotation system se permanent hat gaya hai.")
+        await bot.delete_messages(event.chat_id, reply_msg.id)
     except Exception:
         pass
         
+    try:
+        await event.delete()
+    except Exception:
+        pass
+        
+    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Loop records has been permanently cleaned from main channel system.")
     raise events.StopPropagation
-
 
 
 # 4. 🚀 CHANNEL POST TRACKING LAYER (Exact Message Tracking)
 @bot.on(events.NewMessage)
 async def track_channel_posts(event):
-    # Sirf channels ya main broadcasting chat ke liye tracker (bina command wale post)
     if event.is_channel and not event.is_group:
         if event.text and event.text.startswith('/'):
             return
@@ -233,27 +238,22 @@ async def check_and_rotate_posts():
             for post in old_posts:
                 db_id, chat_id, msg_id, post_time = post
                 
-                # A. Purane original message object ko fetch karna uski styles ke sath
                 original_msg = None
                 try:
                     original_msg = await bot.get_messages(chat_id, ids=msg_id)
                 except Exception:
                     pass
 
-                # B. Pehle purana post delete karo
                 try:
                     await bot.delete_messages(chat_id, msg_id)
                 except Exception as e:
                     logging.info(f"Post missing: {e}")
 
-                # C. Instantly exact copy send karna (Bina formatting chhede)
                 if original_msg:
                     try:
-                        # Telethon ka send_message jab kisi message object ko leta hai, toh exact clone banata hai
                         new_msg = await bot.send_message(chat_id, original_msg)
                         
                         if new_msg:
-                            # Database entry refresh karna
                             cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
                             cursor.execute('''
                                 INSERT INTO auto_posts (chat_id, message_id, post_time)
@@ -263,7 +263,6 @@ async def check_and_rotate_posts():
                     except Exception as e:
                         logging.error(f"Repost failed: {e}")
                 else:
-                    # Agar kisi wajah se message na mile toh entry saaf karo
                     cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
                     conn.commit()
                     

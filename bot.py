@@ -112,38 +112,67 @@ async def set_rotate_time(event):
     raise events.StopPropagation
 
 
-# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP
+# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (CHANNEL COMMENTS & DIRECT CHAT FIXED)
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
-    if event.sender_id != OWNER_ID:
+    # 👑 Bypass Layer: Check user ID ya channel anonymous post
+    is_owner = False
+    if event.sender_id == OWNER_ID:
+        is_owner = True
+    elif event.message.from_id and hasattr(event.message.from_id, 'channel_id'):
+        # Agar aap channel ke naam se comment group mein post kar rahe hain
+        is_owner = True
+
+    if not is_owner:
         await event.reply("❌ Aap is bot ke admin nahi hain!")
         return
         
     if not event.is_reply:
-        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein.")
+        await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein jise lifetime rotate loop se hatana hai.")
         return
         
     reply_msg = await event.get_reply_message()
+    
+    # Target details fetch karna
     target_msg_id = reply_msg.id
     target_chat_id = event.chat_id
     
+    # Agar comment box se trigger kiya hai toh reply_to se main channel message ID track karna
+    if reply_msg.fwd_from and reply_msg.fwd_from.saved_from_msg_id:
+        target_msg_id = reply_msg.fwd_from.saved_from_msg_id
+        if reply_msg.fwd_from.saved_from_peer:
+            try:
+                target_chat_id = reply_msg.fwd_from.saved_from_peer.channel_id
+                # Telethon negative peer standard injection
+                if not str(target_chat_id).startswith("-100"):
+                    target_chat_id = int(f"-100{target_chat_id}")
+            except Exception:
+                pass
+
+    # SQLite Database se permanent clean-up
     conn = sqlite3.connect('posts.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM auto_posts WHERE chat_id = ? AND message_id = ?', (target_chat_id, target_msg_id))
+    cursor.execute('DELETE FROM auto_posts WHERE (chat_id = ? AND message_id = ?) OR message_id = ?', (target_chat_id, target_msg_id, reply_msg.id))
     rows_affected = cursor.rowcount
     conn.commit()
     conn.close()
     
+    # Main channel aur comment box dono se msg hatane ki koshish karna
     try:
         await bot.delete_messages(target_chat_id, target_msg_id)
+        await bot.delete_messages(event.chat_id, reply_msg.id)
+        await event.delete() # Command message ko bhi clear karna
     except Exception:
         pass
         
-    if rows_affected > 0:
-        await event.reply("🗑️ **Lifetime Deleted!** Loop se permanent hat gaya hai.")
-    else:
-        await event.reply("⚠️ Channel se delete kar diya gaya hai.")
+    # Confirmation reply send karna
+    try:
+        await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Yeh post rotation system se permanent hat gaya hai.")
+    except Exception:
+        pass
+        
     raise events.StopPropagation
+
 
 
 # 4. 🚀 CHANNEL POST TRACKING LAYER (Exact Message Tracking)

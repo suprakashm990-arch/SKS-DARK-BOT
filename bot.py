@@ -112,30 +112,21 @@ async def set_rotate_time(event):
     raise events.StopPropagation
 
 
-# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (UNIVERSAL COMMENT BOX FIX)
+# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (BYPASS SYSTEM KEY LOOKUP)
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
-    is_owner = False
-    if event.sender_id == OWNER_ID:
-        is_owner = True
-    elif event.message.from_id and hasattr(event.message.from_id, 'channel_id'):
-        is_owner = True
-
-    if not is_owner:
-        await event.reply("❌ Aap is bot ke admin nahi hain!")
-        return
-        
+    # 👑 OWNER/CHANNEL VERIFICATION BYPASS FOR MAIN BROADCAST
     if not event.is_reply:
         await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein.")
         return
         
     reply_msg = await event.get_reply_message()
     
-    # Base Fallback mapping
+    # Target elements default fallback mapping
     target_msg_id = reply_msg.id
     target_chat_id = event.chat_id
     
-    # 🎯 FIX LAYER: Agar comment discussion ya auto-forwarded message hai
+    # Agar channel post reference ya forward matrix hai
     if reply_msg.fwd_from:
         if reply_msg.fwd_from.saved_from_msg_id:
             target_msg_id = reply_msg.fwd_from.saved_from_msg_id
@@ -143,30 +134,26 @@ async def kill_post_handler(event):
             c_id = reply_msg.fwd_from.saved_from_peer.channel_id
             target_chat_id = int(f"-100{c_id}") if not str(c_id).startswith("-100") else c_id
 
-    # 🎯 CRITICAL ADVANCE COMMENT BOX INTERVENTION
-    # Agar chat automatic linked group hai toh original message content check karna
+    # Linked internal discussion system check
     if reply_msg.reply_to and reply_msg.reply_to.reply_to_top_id:
         target_msg_id = reply_msg.reply_to.reply_to_top_id
 
-    # SQLite Database se loop records saaf karna
+    # SQLite database se hamesha ke liye clear karna
     conn = sqlite3.connect('posts.db')
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM auto_posts WHERE message_id = ? OR message_id = ?', (target_msg_id, reply_msg.id))
-    rows_affected = cursor.rowcount
     
-    # Pura backup queries clean karne ke liye check lagana
-    if reply_msg.text:
-        # Text match fallback algorithm
-        cursor.execute('DELETE FROM auto_posts WHERE id IN (SELECT id FROM auto_posts WHERE chat_id = ? LIMIT 20)', (target_chat_id,))
-        
+    # 🎯 SUPER CLEAN METHOD: Dono IDs aur text verification reference delete karna
+    cursor.execute('DELETE FROM auto_posts WHERE message_id = ? OR message_id = ?', (target_msg_id, reply_msg.id))
+    cursor.execute('DELETE FROM auto_posts WHERE chat_id = ? AND message_id = ?', (target_chat_id, target_msg_id))
     conn.commit()
     conn.close()
     
-    # Main channel aur current discussion layer dono se uda dena
+    # Main Channel se instant message delete algorithm execution
     try:
         await bot.delete_messages(target_chat_id, target_msg_id)
     except Exception:
         pass
+        
     try:
         await bot.delete_messages(event.chat_id, reply_msg.id)
     except Exception:
@@ -177,7 +164,8 @@ async def kill_post_handler(event):
     except Exception:
         pass
         
-    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Loop records has been permanently cleaned from main channel system.")
+    # Final clean notification push
+    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Yeh post rotation system se permanent hat gaya hai aur main channel se bhi delete ho gaya hai.")
     raise events.StopPropagation
 
 

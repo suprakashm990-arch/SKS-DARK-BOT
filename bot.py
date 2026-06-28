@@ -1,8 +1,8 @@
 import os
+import sys
 import time
 import logging
 import requests
-import sqlite3
 import asyncio
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
@@ -27,24 +27,40 @@ bot = TelegramClient('dynamic_filter_bot', API_ID, API_HASH)
 # 👑 OWNER KI ASLI USER ID
 OWNER_ID = 8587571289
 
-# 📂 SQLite Local Database Setup
-def init_db():
-    conn = sqlite3.connect('posts.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS auto_posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            message_id INTEGER,
-            post_time TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# ⏰ SERVER START TIME TRACKER (Auto-Reboot matrix ke liye)
+START_TIME = datetime.now()
 
-init_db()
 
-# --- FIREBASE DATABASE LOGIC ---
+# --- 📂 CLOUD FIREBASE DATABASE LOGIC ---
+
+def save_post_to_cloud(chat_id, message_id):
+    try:
+        data = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "post_time": datetime.now().isoformat()
+        }
+        requests.put(f"{FIREBASE_URL}auto_posts/{message_id}.json", json=data)
+        return True
+    except Exception as e:
+        logging.error(f"Firebase post save error: {e}")
+        return False
+
+def load_all_cloud_posts():
+    try:
+        response = requests.get(f"{FIREBASE_URL}auto_posts.json")
+        if response.status_code == 200 and response.json():
+            return response.json()
+    except Exception as e:
+        logging.error(f"Firebase post load error: {e}")
+    return {}
+
+def delete_post_from_cloud(message_id):
+    try:
+        requests.delete(f"{FIREBASE_URL}auto_posts/{message_id}.json")
+    except Exception as e:
+        logging.error(f"Firebase delete error: {e}")
+
 def load_links_from_firebase():
     try:
         response = requests.get(f"{FIREBASE_URL}links.json")
@@ -69,15 +85,7 @@ def get_rotate_time_minutes():
             return int(response.json())
     except Exception:
         pass
-    return 720
-
-def save_rotate_time_to_firebase(minutes):
-    try:
-        requests.put(f"{FIREBASE_URL}rotate_config/minutes.json", json=minutes)
-        return True
-    except Exception as e:
-        logging.error(f"Firebase save time error: {e}")
-        return False
+    return 720  # Default 12 Ghante
 
 
 # 1. ⚙️ LINK SET/UPDATE COMMAND
@@ -105,28 +113,35 @@ async def set_rotate_time(event):
         return
     
     minutes = int(event.pattern_match.group(1))
-    if save_rotate_time_to_firebase(minutes):
-        await event.reply(f"⏰ **Rotation Time Updated!**\nAb har **{minutes} minutes** baad posts rotate honge.")
-    else:
+    
+    # Validation info array UI message ke liye
+    msg_info = f"{minutes} minutes"
+    if minutes == 1: msg_info = "1 Minute (Testing Only)"
+    elif minutes == 300: msg_info = "5 Ghante"
+    elif minutes == 720: msg_info = "12 Ghante"
+    elif minutes == 1440: msg_info = "1 Din"
+    elif minutes == 4320: msg_info = "3 Din"
+    elif minutes == 10080: msg_info = "7 Din"
+
+    try:
+        requests.put(f"{FIREBASE_URL}rotate_config/minutes.json", json=minutes)
+        await event.reply(f"⏰ **Rotation Time Updated!**\nAb har **{msg_info}** baad posts automatic rotate honge.")
+    except Exception as e:
         await event.reply("❌ Firebase mein time update karne mein error aaya!")
     raise events.StopPropagation
 
 
-# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP (BYPASS SYSTEM KEY LOOKUP)
+# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
-    # 👑 OWNER/CHANNEL VERIFICATION BYPASS FOR MAIN BROADCAST
     if not event.is_reply:
         await event.reply("❌ Kisi aise post par **Reply** karke `/killpost` likhein.")
         return
         
     reply_msg = await event.get_reply_message()
-    
-    # Target elements default fallback mapping
     target_msg_id = reply_msg.id
     target_chat_id = event.chat_id
     
-    # Agar channel post reference ya forward matrix hai
     if reply_msg.fwd_from:
         if reply_msg.fwd_from.saved_from_msg_id:
             target_msg_id = reply_msg.fwd_from.saved_from_msg_id
@@ -134,42 +149,30 @@ async def kill_post_handler(event):
             c_id = reply_msg.fwd_from.saved_from_peer.channel_id
             target_chat_id = int(f"-100{c_id}") if not str(c_id).startswith("-100") else c_id
 
-    # Linked internal discussion system check
     if reply_msg.reply_to and reply_msg.reply_to.reply_to_top_id:
         target_msg_id = reply_msg.reply_to.reply_to_top_id
 
-    # SQLite database se hamesha ke liye clear karna
-    conn = sqlite3.connect('posts.db')
-    cursor = conn.cursor()
+    delete_post_from_cloud(target_msg_id)
+    delete_post_from_cloud(reply_msg.id)
     
-    # 🎯 SUPER CLEAN METHOD: Dono IDs aur text verification reference delete karna
-    cursor.execute('DELETE FROM auto_posts WHERE message_id = ? OR message_id = ?', (target_msg_id, reply_msg.id))
-    cursor.execute('DELETE FROM auto_posts WHERE chat_id = ? AND message_id = ?', (target_chat_id, target_msg_id))
-    conn.commit()
-    conn.close()
-    
-    # Main Channel se instant message delete algorithm execution
     try:
         await bot.delete_messages(target_chat_id, target_msg_id)
     except Exception:
         pass
-        
     try:
         await bot.delete_messages(event.chat_id, reply_msg.id)
     except Exception:
         pass
-        
     try:
         await event.delete()
     except Exception:
         pass
         
-    # Final clean notification push
-    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Yeh post rotation system se permanent hat gaya hai aur main channel se bhi delete ho gaya hai.")
+    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Post system se permanent clean ho gayi hai.")
     raise events.StopPropagation
 
 
-# 4. 🚀 CHANNEL POST TRACKING LAYER (Exact Message Tracking)
+# 4. 🚀 CHANNEL POST TRACKING LAYER (Hidden Link Friendly Object Saver)
 @bot.on(events.NewMessage)
 async def track_channel_posts(event):
     if event.is_channel and not event.is_group:
@@ -178,18 +181,10 @@ async def track_channel_posts(event):
 
         chat_id = event.chat_id
         msg_id = event.id
-
-        conn = sqlite3.connect('posts.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO auto_posts (chat_id, message_id, post_time)
-            VALUES (?, ?, ?)
-        ''', (chat_id, msg_id, datetime.now()))
-        conn.commit()
-        conn.close()
+        save_post_to_cloud(chat_id, msg_id)
 
 
-# 5. 👥 GROUP AUTOMATIC REPLY ONLY
+# 5. 👥 GROUP AUTOMATIC REPLY (Pehle Ki Tarah Bina Ruke Chalega)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     if not event.is_group:
@@ -211,54 +206,57 @@ async def handle_group_replies(event):
             break
 
 
-# 🔄 6. BACKGROUND ROTATE LAYER (EXACT IMAGE & CAPTION MATCHING CLONE)
+# 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
 async def check_and_rotate_posts():
     while True:
+        # ⏰ CRITICAL AUTO-REBOOT LAYER
+        # Agar bot ko chale huye 4 ghante 45 minute ho gaye hain, toh khud restart hoga
+        elapsed_time = datetime.now() - START_TIME
+        if elapsed_time >= timedelta(hours=4, minutes=45):
+            print("🔄 [SAFE REBOOT] 4 Ghante 45 Minute Pure Huye! Server restarting to prevent force-kill...")
+            os.execv(sys.executable, ['python'] + sys.argv) # Current runtime execution matrix reload code
+
         try:
             interval_minutes = get_rotate_time_minutes()
-            time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
+            cloud_posts = load_all_cloud_posts()
             
-            conn = sqlite3.connect('posts.db')
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM auto_posts WHERE post_time <= ?', (time_threshold,))
-            old_posts = cursor.fetchall()
-            
-            for post in old_posts:
-                db_id, chat_id, msg_id, post_time = post
+            for key_id, post_data in cloud_posts.items():
+                chat_id = post_data["chat_id"]
+                msg_id = post_data["message_id"]
+                post_time_str = post_data["post_time"]
                 
-                original_msg = None
-                try:
-                    original_msg = await bot.get_messages(chat_id, ids=msg_id)
-                except Exception:
-                    pass
-
-                try:
-                    await bot.delete_messages(chat_id, msg_id)
-                except Exception as e:
-                    logging.info(f"Post missing: {e}")
-
-                if original_msg:
+                post_time = datetime.fromisoformat(post_time_str)
+                time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
+                
+                if post_time <= time_threshold:
+                    original_msg = None
                     try:
-                        new_msg = await bot.send_message(chat_id, original_msg)
-                        
-                        if new_msg:
-                            cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
-                            cursor.execute('''
-                                INSERT INTO auto_posts (chat_id, message_id, post_time)
-                                VALUES (?, ?, ?)
-                            ''', (chat_id, new_msg.id, datetime.now()))
-                            conn.commit()
+                        # Exact full message entity pull karna jisse hidden links formatted rahein
+                        original_msg = await bot.get_messages(chat_id, ids=msg_id)
+                    except Exception:
+                        pass
+
+                    try:
+                        await bot.delete_messages(chat_id, msg_id)
                     except Exception as e:
-                        logging.error(f"Repost failed: {e}")
-                else:
-                    cursor.execute('DELETE FROM auto_posts WHERE id = ?', (db_id,))
-                    conn.commit()
-                    
-            conn.close()
+                        logging.info(f"Post already gone: {e}")
+
+                    if original_msg:
+                        try:
+                            # Direct message structure injection cloning (Chhupa link exact safe rahega)
+                            new_msg = await bot.send_message(chat_id, original_msg)
+                            if new_msg:
+                                delete_post_from_cloud(msg_id)
+                                save_post_to_cloud(chat_id, new_msg.id)
+                        except Exception as e:
+                            logging.error(f"Repost failed: {e}")
+                    else:
+                        delete_post_from_cloud(msg_id)
+                        
         except Exception as e:
-            logging.error(f"Rotation engine error: {e}")
+            logging.error(f"Cloud Rotation Engine error: {e}")
             
-        await asyncio.sleep(10)
+        await asyncio.sleep(15)
 
 
 # 🚀 CLIENT RUNNER

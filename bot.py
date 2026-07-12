@@ -72,7 +72,7 @@ def get_rotate_time_minutes():
             return int(response.json())
     except Exception:
         pass
-    return 4320  # Default 3 Din (4320 Minutes)
+    return 4320  # Default 3 Din
 
 
 # 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE
@@ -171,7 +171,7 @@ async def track_channel_posts(event):
         save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 6. 🔥 MASTER DETECTOR SEARCH ENGINE
+# 👥 6. 🔥 FIX: TELETHON 1.38.1 COMPATIBLE LOCAL ENGINE
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     global TARGET_CHANNEL_ID
@@ -191,7 +191,7 @@ async def handle_group_replies(event):
         return
 
     try:
-        # 1️⃣ Backup Layer 1: Database configuration check
+        # Fallback 1: Database Check
         if not TARGET_CHANNEL_ID:
             try:
                 res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
@@ -200,29 +200,19 @@ async def handle_group_replies(event):
             except Exception:
                 pass
 
-        # 2️⃣ Backup Layer 2: Load from active cloud rotation logs
+        # Fallback 2: Cloud logs check
         if not TARGET_CHANNEL_ID:
             cloud_posts = load_all_cloud_posts()
             if cloud_posts:
                 first_key = list(cloud_posts.keys())[0]
                 TARGET_CHANNEL_ID = int(cloud_posts[first_key].get("chat_id"))
 
-        # 3️⃣ Backup Layer 3: Safe Dialog Scanning (Wrapped under try-except block to prevent crash)
         if not TARGET_CHANNEL_ID:
-            try:
-                async for dialog in bot.iter_dialogs(limit=50):
-                    if dialog.is_channel and not dialog.is_group:
-                        TARGET_CHANNEL_ID = dialog.id
-                        break
-            except Exception as e:
-                logging.error(f"Dialog scanning bypass: {e}")
-
-        if not TARGET_CHANNEL_ID:
-            logging.error("❌ CRITICAL: Target channel could not be resolved.")
             return
 
         found_msg = None
-        async for message in bot.iter_messages(TARGET_CHANNEL_ID, search=clean_query, limit=25):
+        # 🔥 Telethon 1.38.1 Engine Fix: Live search parameter crash bypass karne ke liye safe local scan loop
+        async for message in bot.iter_messages(TARGET_CHANNEL_ID, limit=60):
             if message.text and clean_query in message.text.lower():
                 found_msg = message
                 break
@@ -306,7 +296,6 @@ async def main():
     global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
     
-    # 🌟 Multi-Layer Target Resolution on boot
     try:
         res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
         if res.status_code == 200 and res.json():
@@ -316,13 +305,13 @@ async def main():
 
     if not TARGET_CHANNEL_ID:
         try:
-            async for dialog in bot.iter_dialogs(limit=30):
+            async for dialog in bot.iter_dialogs(limit=20):
                 if dialog.is_channel and not dialog.is_group:
                     TARGET_CHANNEL_ID = dialog.id
                     requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
                     break
-        except Exception as e:
-            logging.error(f"Initial boot dialog search bypassed: {e}")
+        except Exception:
+            pass
             
     if TARGET_CHANNEL_ID:
         bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))

@@ -75,24 +75,26 @@ def get_rotate_time_minutes():
     return 4320  # Default 3 Din
 
 
-# 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE
+# 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE (With Delay to Prevent Connection Drops)
 async def sync_historical_channel_posts(target_channel_id):
     logging.info(f"🔄 Starting historical channel post sync for ID: {target_channel_id}...")
+    await asyncio.sleep(5)  # Safe buffer delay
     try:
         cloud_posts = load_all_cloud_posts()
         existing_msg_ids = {int(k) for k in cloud_posts.keys()} if cloud_posts else set()
         
-        async for message in bot.iter_messages(target_channel_id, limit=300):
+        async for message in bot.iter_messages(target_channel_id, limit=200):
             if message.text and not message.text.startswith('/'):
                 if message.id not in existing_msg_ids:
                     asli_time = message.date.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                     save_post_to_cloud(target_channel_id, message.id, custom_time=asli_time)
+                    await asyncio.sleep(0.5)  # Telegram server par flood load na aaye
         logging.info("✅ Historical post sync completed successfully!")
     except Exception as e:
         logging.error(f"Error during historical sync: {e}")
 
 
-# 👑 2. 🔥 NEW SECRET OWNER ALIVE TESTER (Aapke liye verification feature)
+# 👑 2. SECRET OWNER ALIVE TESTER
 @bot.on(events.NewMessage(incoming=True))
 async def owner_alive_tester(event):
     if event.is_private and event.sender_id == OWNER_ID:
@@ -295,14 +297,17 @@ async def check_and_rotate_posts():
         except Exception as e:
             logging.error(f"Cloud Rotation Engine error: {e}")
             
-        await asyncio.sleep(20)
+        await asyncio.sleep(30) # Fixed safe lookup frequency interval
 
 
 # 🚀 CLIENT RUNNER
 async def main():
     global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
+    logging.info("⚡ Bot successfully authenticated with Telegram Server!")
     
+    await asyncio.sleep(2) # Connection stability pause
+
     try:
         res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
         if res.status_code == 200 and res.json():
@@ -312,7 +317,7 @@ async def main():
 
     if not TARGET_CHANNEL_ID:
         try:
-            async for dialog in bot.iter_dialogs(limit=20):
+            async for dialog in bot.iter_dialogs(limit=15):
                 if dialog.is_channel and not dialog.is_group:
                     TARGET_CHANNEL_ID = dialog.id
                     requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)

@@ -6,6 +6,7 @@ import requests
 import asyncio
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
+from telethon.tl.types import Channel
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +30,9 @@ OWNER_ID = 8587571289
 
 # ⏰ SERVER START TIME TRACKER
 START_TIME = datetime.now()
+
+# Global Variable to hold dynamic channel ID
+TARGET_CHANNEL_ID = None
 
 
 # --- 📂 CLOUD FIREBASE DATABASE LOGIC ---
@@ -72,21 +76,18 @@ def get_rotate_time_minutes():
     return 4320  # Default 3 Din (4320 Minutes)
 
 
-# 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE (Purana saara data backup karne ke liye)
+# 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE
 async def sync_historical_channel_posts(target_channel_id):
-    logging.info("🔄 Starting historical channel post sync...")
+    logging.info(f"🔄 Starting historical channel post sync for ID: {target_channel_id}...")
     try:
         cloud_posts = load_all_cloud_posts()
         existing_msg_ids = {int(k) for k in cloud_posts.keys()} if cloud_posts else set()
         
-        # Channel ke pichle 500 messages scan karega (Aap limit badha bhi sakte hain)
         async for message in bot.iter_messages(target_channel_id, limit=500):
             if message.text and not message.text.startswith('/'):
                 if message.id not in existing_msg_ids:
-                    # Asli time (UTC/Local) ko ISO format me nikalna
                     asli_time = message.date.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                     save_post_to_cloud(target_channel_id, message.id, custom_time=asli_time)
-                    logging.info(f"📥 Synced historical post ID: {message.id} | Asli Date: {asli_time}")
         logging.info("✅ Historical post sync completed successfully!")
     except Exception as e:
         logging.error(f"Error during historical sync: {e}")
@@ -98,7 +99,7 @@ async def set_filter(event):
     if event.sender_id != OWNER_ID:
         await event.reply("❌ Aap is bot ke admin nahi hain!")
         return
-    await event.reply("ℹ️ Bhai, filter set karne ki zaroorat nahi hai. Bot automatic channel aur database dono se dynamic search kar leta hai.")
+    await event.reply("ℹ️ Filter ki zaroorat nahi hai. Bot automatic live search kar leta hai.")
     raise events.StopPropagation
 
 
@@ -110,13 +111,11 @@ async def set_rotate_time(event):
         return
     
     minutes = int(event.pattern_match.group(1))
-    
     msg_info = f"{minutes} minutes"
     if minutes == 1: msg_info = "1 Minute (Testing Only)"
     elif minutes == 720: msg_info = "12 Ghante"
     elif minutes == 1440: msg_info = "1 Din"
     elif minutes == 4320: msg_info = "3 Din"
-    elif minutes == 10080: msg_info = "7 Din"
 
     try:
         requests.put(f"{FIREBASE_URL}rotate_config/minutes.json", json=minutes)
@@ -158,27 +157,21 @@ async def kill_post_handler(event):
     raise events.StopPropagation
 
 
-# 🚀 5. CHANNEL POST TRACKING LAYER (Dynamic Channel ID Saver)
+# 🚀 5. CHANNEL POST TRACKING LAYER
 @bot.on(events.NewMessage)
 async def track_channel_posts(event):
+    global TARGET_CHANNEL_ID
     if event.is_channel and not event.is_group:
         if event.text and event.text.startswith('/'):
             return
-
-        chat_id = event.chat_id
-        msg_id = event.id
-        
-        try:
-            requests.put(f"{FIREBASE_URL}config/target_channel.json", json=chat_id)
-        except Exception:
-            pass
-            
-        save_post_to_cloud(chat_id, msg_id)
+        TARGET_CHANNEL_ID = event.chat_id
+        save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 6. DYNAMIC LIVE CHANNEL SEARCH ENGINE
+# 👥 6. 🔥 HARDCORE FIXED: LIVE CHANNEL SEARCH ENGINE (BINA ID ISSUE KE)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
+    global TARGET_CHANNEL_ID
     if not event.is_group:
         return
         
@@ -195,40 +188,35 @@ async def handle_group_replies(event):
         return
 
     try:
-        target_channel_id = None
-        try:
-            res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
-            if res.status_code == 200 and res.json():
-                target_channel_id = int(res.json())
-        except Exception:
-            pass
+        # 🔥 FIX: Agar global ID khali hai, toh bot automatic apne list se channel ID utha lega
+        if not TARGET_CHANNEL_ID:
+            async for dialog in bot.iter_dialogs():
+                if dialog.is_channel and not dialog.is_group:
+                    TARGET_CHANNEL_ID = dialog.id
+                    break
 
-        if not target_channel_id:
-            cloud_posts = load_all_cloud_posts()
-            if cloud_posts:
-                first_key = list(cloud_posts.keys())[0]
-                target_channel_id = cloud_posts[first_key].get("chat_id")
-
-        if not target_channel_id:
+        if not TARGET_CHANNEL_ID:
+            logging.error("❌ Bot kisi bhi channel me admin nahi mila!")
             return
 
         found_msg = None
-        async for message in bot.iter_messages(target_channel_id, search=clean_query, limit=15):
+        # Direct dynamic channel memory me live scan marna
+        async for message in bot.iter_messages(TARGET_CHANNEL_ID, search=clean_query, limit=20):
             if message.text and clean_query in message.text.lower():
                 found_msg = message
                 break
 
         if found_msg:
             try:
-                channel_entity = await bot.get_entity(target_channel_id)
+                channel_entity = await bot.get_entity(TARGET_CHANNEL_ID)
                 username = channel_entity.username
                 if username:
                     post_link = f"https://t.me/{username}/{found_msg.id}"
                 else:
-                    encoded_id = str(abs(target_channel_id)).replace("100", "", 1)
+                    encoded_id = str(abs(TARGET_CHANNEL_ID)).replace("100", "", 1)
                     post_link = f"https://t.me/c/{encoded_id}/{found_msg.id}"
             except Exception:
-                encoded_id = str(abs(target_channel_id)).replace("100", "", 1)
+                encoded_id = str(abs(TARGET_CHANNEL_ID)).replace("100", "", 1)
                 post_link = f"https://t.me/c/{encoded_id}/{found_msg.id}"
 
             reply_text = (
@@ -246,10 +234,10 @@ async def handle_group_replies(event):
 
 # 🔄 7. CORE ENGINE: ADVANCED ROTATION & AUTO-PURGE LOOP
 async def check_and_rotate_posts():
+    global TARGET_CHANNEL_ID
     while True:
         elapsed_time = datetime.now() - START_TIME
         if elapsed_time >= timedelta(hours=4, minutes=45):
-            print("🔄 [SAFE REBOOT] restarting to prevent force-kill...")
             os.execv(sys.executable, ['python'] + sys.argv)
 
         try:
@@ -264,7 +252,6 @@ async def check_and_rotate_posts():
                 post_time = datetime.fromisoformat(post_time_str)
                 time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
                 
-                # Agar post ka asli duration threshold limit cross kar gaya ho
                 if post_time <= time_threshold:
                     original_msg = None
                     try:
@@ -272,26 +259,20 @@ async def check_and_rotate_posts():
                     except Exception:
                         pass
 
-                    # 🚨 WIPE LOGIC: Purane reference ko har jagah se destroy karna
                     try:
                         await bot.delete_messages(chat_id, msg_id)
                         delete_post_from_cloud(msg_id)
-                        logging.info(f"🗑️ Purged expired post ID: {msg_id}")
-                    except Exception as e:
-                        logging.error(f"Failed to delete old post: {e}")
+                    except Exception:
+                        pass
 
-                    # Fresh replication engine trigger karna
                     if original_msg and original_msg.text:
                         try:
                             new_msg = await bot.send_message(chat_id, original_msg)
                             if new_msg:
-                                # Naye message ko fresh timestamp ke saath add karna
                                 save_post_to_cloud(chat_id, new_msg.id)
-                                logging.info(f"🚀 Reposted successfully. New ID: {new_msg.id}")
-                        except Exception as e:
-                            logging.error(f"Failed to send cloned post: {e}")
+                        except Exception:
+                            pass
                     else:
-                        # Agar channel par post pehle se hi delete ho chuki thi
                         delete_post_from_cloud(msg_id)
                             
         except Exception as e:
@@ -302,20 +283,18 @@ async def check_and_rotate_posts():
 
 # 🚀 CLIENT RUNNER
 async def main():
+    global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
     
-    # Target Channel ID fetch dynamic ya stored configuration se uthana
-    target_channel_id = None
-    try:
-        res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
-        if res.status_code == 200 and res.json():
-            target_channel_id = int(res.json())
-    except Exception:
-        pass
-        
-    if target_channel_id:
-        # Background task me purani posts ka data scan aur automatic backup karega
-        bot.loop.create_task(sync_historical_channel_posts(target_channel_id))
+    # 🔥 AUTOMATIC CHANNEL DETECTOR ON STARTUP
+    async for dialog in bot.iter_dialogs():
+        if dialog.is_channel and not dialog.is_group:
+            TARGET_CHANNEL_ID = dialog.id
+            logging.info(f"🎯 Dynamic Target Channel Detected: {dialog.name} (ID: {TARGET_CHANNEL_ID})")
+            break
+            
+    if TARGET_CHANNEL_ID:
+        bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))
         
     bot.loop.create_task(check_and_rotate_posts())
     await bot.run_until_disconnected()

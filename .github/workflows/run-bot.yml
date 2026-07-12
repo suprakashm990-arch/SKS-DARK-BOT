@@ -5,41 +5,27 @@ on:
     branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *' # Backup trigger har 5 ghante mein
+    - cron: '*/30 * * * *' # Har 30 minute me check karega ki bot chal raha hai ya nahi
 
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 290 # 4 Ghante 50 minute par safe exit lega
-
     steps:
-    - name: Code Checkout
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Python Setup
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-    - name: Libraries Install Karna
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
-    - name: Bot Chalu Karein (With Safe Timeout)
-      env:
-        TG_API_ID: ${{ secrets.TG_API_ID }}
-        TG_API_HASH: ${{ secrets.TG_API_HASH }}
-        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      # timeout command se script khud 4 ghante 45 minute baad safely close hogi, jisse failure nahi mana jayega
-      run: |
-        timeout 285m python bot.py || echo "Safe timeout reached, restarting..."
-
-    - name: Automatic Loop Trigger (Bot Ko Dobara Chalu Karna)
-      if: always() # Bot chahe safely band ho ya crash ho, yeh step humesha chalega
-      run: |
-        curl -X POST \
-          -H "Authorization: token ${{ secrets.MY_GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
-          -d '{"ref":"main"}'
+      - name: Install dependencies
+        run: |
+          pip install telethon requests
+          
+      - name: Run Bot
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        run: python bot.py

@@ -75,7 +75,7 @@ def get_rotate_time_minutes():
     return 4320  # Default 3 Din
 
 
-# 🛠️ 1. SAFE BACKGROUND HISTORICAL SYNC (Bina loop freeze kiye chalta rahega)
+# 🛠️ 1. SAFE BACKGROUND HISTORICAL SYNC
 async def sync_historical_channel_posts(target_channel_id):
     logging.info(f"🔄 Starting background sync for ID: {target_channel_id}...")
     try:
@@ -93,7 +93,7 @@ async def sync_historical_channel_posts(target_channel_id):
         logging.error(f"Error during historical sync: {e}")
 
 
-# 👑 2. SECRET OWNER ALIVE TESTER (Strict priority rule)
+# 👑 2. SECRET OWNER ALIVE TESTER
 @bot.on(events.NewMessage(incoming=True))
 async def owner_alive_tester(event):
     if event.is_private and event.sender_id == OWNER_ID:
@@ -182,7 +182,7 @@ async def track_channel_posts(event):
         save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 7. TELETHON 1.38.1 LOCAL SAFE ENGINE
+# 👥 7. TELETHON 1.38.1 LOCAL SAFE ENGINE (Syntax Error Fixed Here)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     global TARGET_CHANNEL_ID
@@ -220,8 +220,8 @@ async def handle_group_replies(event):
             return
 
         found_msg = None
-        async print_msgs = bot.iter_messages(TARGET_CHANNEL_ID, limit=80)
-        async for message in print_msgs:
+        # Syntax Error Fixed: Direct pass to async loop instead of invalid variable tag
+        async for message in bot.iter_messages(TARGET_CHANNEL_ID, limit=80):
             if message.text and clean_query in message.text.lower():
                 found_msg = message
                 break
@@ -313,7 +313,16 @@ async def main():
     except Exception:
         pass
 
-    # Safe Background Execution to prevent startup flood waits
+    if not TARGET_CHANNEL_ID:
+        try:
+            async for dialog in bot.iter_dialogs(limit=15):
+                if dialog.is_channel and not dialog.is_group:
+                    TARGET_CHANNEL_ID = dialog.id
+                    requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
+                    break
+        except Exception:
+            pass
+            
     if TARGET_CHANNEL_ID:
         bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))
         

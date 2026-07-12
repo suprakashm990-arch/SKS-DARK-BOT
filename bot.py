@@ -92,7 +92,17 @@ async def sync_historical_channel_posts(target_channel_id):
         logging.error(f"Error during historical sync: {e}")
 
 
-# ⚙️ 2. DYNAMIC FILTER INFO COMMAND
+# 👑 2. 🔥 NEW SECRET OWNER ALIVE TESTER (Aapke liye verification feature)
+@bot.on(events.NewMessage(incoming=True))
+async def owner_alive_tester(event):
+    if event.is_private and event.sender_id == OWNER_ID:
+        msg_text = event.raw_text.lower().strip() if event.raw_text else ""
+        if msg_text == "hello":
+            await event.reply("👑 **Hello MOD Owner!** Aapka bot fully active hai aur background me dauda raha hai. 🟢")
+            raise events.StopPropagation
+
+
+# ⚙️ 3. DYNAMIC FILTER INFO COMMAND
 @bot.on(events.NewMessage(pattern=r'/filter (.+?) (https?://\S+)'))
 async def set_filter(event):
     if event.sender_id != OWNER_ID:
@@ -102,7 +112,7 @@ async def set_filter(event):
     raise events.StopPropagation
 
 
-# ⏱️ 3. TELEGRAM SE TIME CONTROL SET KARNA
+# ⏱️ 4. TELEGRAM SE TIME CONTROL SET KARNA
 @bot.on(events.NewMessage(pattern=r'/rotate_time (\d+)'))
 async def set_rotate_time(event):
     if event.sender_id != OWNER_ID:
@@ -124,7 +134,7 @@ async def set_rotate_time(event):
     raise events.StopPropagation
 
 
-# 💀 4. LIFETIME POST DELETE FROM BOT LOOP
+# 💀 5. LIFETIME POST DELETE FROM BOT LOOP
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
     if not event.is_reply:
@@ -156,7 +166,7 @@ async def kill_post_handler(event):
     raise events.StopPropagation
 
 
-# 🚀 5. CHANNEL POST TRACKING LAYER
+# 🚀 6. CHANNEL POST TRACKING LAYER
 @bot.on(events.NewMessage)
 async def track_channel_posts(event):
     global TARGET_CHANNEL_ID
@@ -171,7 +181,7 @@ async def track_channel_posts(event):
         save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 6. 🔥 FIX: TELETHON 1.38.1 COMPATIBLE LOCAL ENGINE
+# 👥 7. TELETHON 1.38.1 COMPATIBLE LOCAL ENGINE
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     global TARGET_CHANNEL_ID
@@ -191,7 +201,6 @@ async def handle_group_replies(event):
         return
 
     try:
-        # Fallback 1: Database Check
         if not TARGET_CHANNEL_ID:
             try:
                 res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
@@ -200,7 +209,6 @@ async def handle_group_replies(event):
             except Exception:
                 pass
 
-        # Fallback 2: Cloud logs check
         if not TARGET_CHANNEL_ID:
             cloud_posts = load_all_cloud_posts()
             if cloud_posts:
@@ -211,7 +219,6 @@ async def handle_group_replies(event):
             return
 
         found_msg = None
-        # 🔥 Telethon 1.38.1 Engine Fix: Live search parameter crash bypass karne ke liye safe local scan loop
         async for message in bot.iter_messages(TARGET_CHANNEL_ID, limit=60):
             if message.text and clean_query in message.text.lower():
                 found_msg = message
@@ -243,7 +250,7 @@ async def handle_group_replies(event):
         logging.error(f"Live search error: {e}")
 
 
-# 🔄 7. CORE ENGINE: ADVANCED ROTATION & AUTO-PURGE LOOP
+# 🔄 8. CORE ENGINE: ADVANCED ROTATION & AUTO-PURGE LOOP
 async def check_and_rotate_posts():
     while True:
         elapsed_time = datetime.now() - START_TIME

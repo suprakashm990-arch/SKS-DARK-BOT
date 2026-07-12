@@ -75,32 +75,31 @@ def get_rotate_time_minutes():
     return 4320  # Default 3 Din
 
 
-# 🛠️ 1. AUTOMATIC HISTORICAL DATA SYNC ENGINE (With Delay to Prevent Connection Drops)
+# 🛠️ 1. SAFE BACKGROUND HISTORICAL SYNC (Bina loop freeze kiye chalta rahega)
 async def sync_historical_channel_posts(target_channel_id):
-    logging.info(f"🔄 Starting historical channel post sync for ID: {target_channel_id}...")
-    await asyncio.sleep(5)  # Safe buffer delay
+    logging.info(f"🔄 Starting background sync for ID: {target_channel_id}...")
     try:
         cloud_posts = load_all_cloud_posts()
         existing_msg_ids = {int(k) for k in cloud_posts.keys()} if cloud_posts else set()
         
-        async for message in bot.iter_messages(target_channel_id, limit=200):
+        async for message in bot.iter_messages(target_channel_id, limit=100):
             if message.text and not message.text.startswith('/'):
                 if message.id not in existing_msg_ids:
                     asli_time = message.date.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
                     save_post_to_cloud(target_channel_id, message.id, custom_time=asli_time)
-                    await asyncio.sleep(0.5)  # Telegram server par flood load na aaye
-        logging.info("✅ Historical post sync completed successfully!")
+                    await asyncio.sleep(2)  # High execution gap to keep connection safe
+        logging.info("✅ Background historical sync completed successfully!")
     except Exception as e:
         logging.error(f"Error during historical sync: {e}")
 
 
-# 👑 2. SECRET OWNER ALIVE TESTER
+# 👑 2. SECRET OWNER ALIVE TESTER (Strict priority rule)
 @bot.on(events.NewMessage(incoming=True))
 async def owner_alive_tester(event):
     if event.is_private and event.sender_id == OWNER_ID:
         msg_text = event.raw_text.lower().strip() if event.raw_text else ""
         if msg_text == "hello":
-            await event.reply("👑 **Hello MOD Owner!** Aapka bot fully active hai aur background me dauda raha hai. 🟢")
+            await event.reply("👑 **Hello MOD Owner!** Aapka bot 100% fully active hai aur background me sahi se daud raha hai. 🟢")
             raise events.StopPropagation
 
 
@@ -183,7 +182,7 @@ async def track_channel_posts(event):
         save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 7. TELETHON 1.38.1 COMPATIBLE LOCAL ENGINE
+# 👥 7. TELETHON 1.38.1 LOCAL SAFE ENGINE
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     global TARGET_CHANNEL_ID
@@ -221,7 +220,8 @@ async def handle_group_replies(event):
             return
 
         found_msg = None
-        async for message in bot.iter_messages(TARGET_CHANNEL_ID, limit=60):
+        async print_msgs = bot.iter_messages(TARGET_CHANNEL_ID, limit=80)
+        async for message in print_msgs:
             if message.text and clean_query in message.text.lower():
                 found_msg = message
                 break
@@ -297,16 +297,14 @@ async def check_and_rotate_posts():
         except Exception as e:
             logging.error(f"Cloud Rotation Engine error: {e}")
             
-        await asyncio.sleep(30) # Fixed safe lookup frequency interval
+        await asyncio.sleep(45)
 
 
 # 🚀 CLIENT RUNNER
 async def main():
     global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
-    logging.info("⚡ Bot successfully authenticated with Telegram Server!")
-    
-    await asyncio.sleep(2) # Connection stability pause
+    logging.info("⚡ Bot authenticated successfully!")
 
     try:
         res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
@@ -315,16 +313,7 @@ async def main():
     except Exception:
         pass
 
-    if not TARGET_CHANNEL_ID:
-        try:
-            async for dialog in bot.iter_dialogs(limit=15):
-                if dialog.is_channel and not dialog.is_group:
-                    TARGET_CHANNEL_ID = dialog.id
-                    requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
-                    break
-        except Exception:
-            pass
-            
+    # Safe Background Execution to prevent startup flood waits
     if TARGET_CHANNEL_ID:
         bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))
         

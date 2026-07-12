@@ -6,7 +6,6 @@ import requests
 import asyncio
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
-from telethon.tl.types import Channel
 
 logging.basicConfig(level=logging.INFO)
 
@@ -83,7 +82,7 @@ async def sync_historical_channel_posts(target_channel_id):
         cloud_posts = load_all_cloud_posts()
         existing_msg_ids = {int(k) for k in cloud_posts.keys()} if cloud_posts else set()
         
-        async for message in bot.iter_messages(target_channel_id, limit=500):
+        async for message in bot.iter_messages(target_channel_id, limit=300):
             if message.text and not message.text.startswith('/'):
                 if message.id not in existing_msg_ids:
                     asli_time = message.date.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
@@ -165,10 +164,14 @@ async def track_channel_posts(event):
         if event.text and event.text.startswith('/'):
             return
         TARGET_CHANNEL_ID = event.chat_id
+        try:
+            requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
+        except Exception:
+            pass
         save_post_to_cloud(event.chat_id, event.id)
 
 
-# 👥 6. 🔥 HARDCORE FIXED: LIVE CHANNEL SEARCH ENGINE (BINA ID ISSUE KE)
+# 👥 6. 🔥 MASTER DETECTOR SEARCH ENGINE
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     global TARGET_CHANNEL_ID
@@ -188,20 +191,38 @@ async def handle_group_replies(event):
         return
 
     try:
-        # 🔥 FIX: Agar global ID khali hai, toh bot automatic apne list se channel ID utha lega
+        # 1️⃣ Backup Layer 1: Database configuration check
         if not TARGET_CHANNEL_ID:
-            async for dialog in bot.iter_dialogs():
-                if dialog.is_channel and not dialog.is_group:
-                    TARGET_CHANNEL_ID = dialog.id
-                    break
+            try:
+                res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
+                if res.status_code == 200 and res.json():
+                    TARGET_CHANNEL_ID = int(res.json())
+            except Exception:
+                pass
+
+        # 2️⃣ Backup Layer 2: Load from active cloud rotation logs
+        if not TARGET_CHANNEL_ID:
+            cloud_posts = load_all_cloud_posts()
+            if cloud_posts:
+                first_key = list(cloud_posts.keys())[0]
+                TARGET_CHANNEL_ID = int(cloud_posts[first_key].get("chat_id"))
+
+        # 3️⃣ Backup Layer 3: Safe Dialog Scanning (Wrapped under try-except block to prevent crash)
+        if not TARGET_CHANNEL_ID:
+            try:
+                async for dialog in bot.iter_dialogs(limit=50):
+                    if dialog.is_channel and not dialog.is_group:
+                        TARGET_CHANNEL_ID = dialog.id
+                        break
+            except Exception as e:
+                logging.error(f"Dialog scanning bypass: {e}")
 
         if not TARGET_CHANNEL_ID:
-            logging.error("❌ Bot kisi bhi channel me admin nahi mila!")
+            logging.error("❌ CRITICAL: Target channel could not be resolved.")
             return
 
         found_msg = None
-        # Direct dynamic channel memory me live scan marna
-        async for message in bot.iter_messages(TARGET_CHANNEL_ID, search=clean_query, limit=20):
+        async for message in bot.iter_messages(TARGET_CHANNEL_ID, search=clean_query, limit=25):
             if message.text and clean_query in message.text.lower():
                 found_msg = message
                 break
@@ -234,7 +255,6 @@ async def handle_group_replies(event):
 
 # 🔄 7. CORE ENGINE: ADVANCED ROTATION & AUTO-PURGE LOOP
 async def check_and_rotate_posts():
-    global TARGET_CHANNEL_ID
     while True:
         elapsed_time = datetime.now() - START_TIME
         if elapsed_time >= timedelta(hours=4, minutes=45):
@@ -286,12 +306,23 @@ async def main():
     global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
     
-    # 🔥 AUTOMATIC CHANNEL DETECTOR ON STARTUP
-    async for dialog in bot.iter_dialogs():
-        if dialog.is_channel and not dialog.is_group:
-            TARGET_CHANNEL_ID = dialog.id
-            logging.info(f"🎯 Dynamic Target Channel Detected: {dialog.name} (ID: {TARGET_CHANNEL_ID})")
-            break
+    # 🌟 Multi-Layer Target Resolution on boot
+    try:
+        res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
+        if res.status_code == 200 and res.json():
+            TARGET_CHANNEL_ID = int(res.json())
+    except Exception:
+        pass
+
+    if not TARGET_CHANNEL_ID:
+        try:
+            async for dialog in bot.iter_dialogs(limit=30):
+                if dialog.is_channel and not dialog.is_group:
+                    TARGET_CHANNEL_ID = dialog.id
+                    requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
+                    break
+        except Exception as e:
+            logging.error(f"Initial boot dialog search bypassed: {e}")
             
     if TARGET_CHANNEL_ID:
         bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))

@@ -197,7 +197,7 @@ async def handle_group_replies(event):
     # Aapka channel username
     TARGET_CHANNEL = 'PRMMOD'
     
-    stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye"}
+    stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye", "pro", "premium"}
     
     words = message_text.split()
     cleaned_words = [w for w in words if w not in stop_words]
@@ -266,7 +266,7 @@ async def handle_group_replies(event):
         await event.reply(reply_text, link_preview=False)
 
 
-# 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
+# 🔄 6. BACKGROUND ENGINE (Rotation Management + 3 Day Delete Fix)
 async def check_and_rotate_posts():
     while True:
         # ⏰ CRITICAL AUTO-REBOOT LAYER
@@ -274,7 +274,7 @@ async def check_and_rotate_posts():
         elapsed_time = datetime.now() - START_TIME
         if elapsed_time >= timedelta(hours=4, minutes=45):
             print("🔄 [SAFE REBOOT] 4 Ghante 45 Minute Pure Huye! Server restarting to prevent force-kill...")
-            os.execv(sys.executable, ['python'] + sys.argv) # Current runtime execution matrix reload code
+            os.execv(sys.executable, ['python'] + sys.argv)
 
         try:
             interval_minutes = get_rotate_time_minutes()
@@ -290,21 +290,29 @@ async def check_and_rotate_posts():
                 
                 if post_time <= time_threshold:
                     original_msg = None
+                    
+                    # 🚀 3-DAY BUG FIX: Bot ki memory (Cache) refresh karna 
                     try:
-                        # Exact full message entity pull karna jisse hidden links formatted rahein
-                        original_msg = await bot.get_messages(chat_id, ids=msg_id)
+                        target_chat = await bot.get_entity(chat_id)
+                    except Exception:
+                        target_chat = chat_id
+
+                    try:
+                        # Exact full message entity pull karna (Hidden links safe rahenge)
+                        original_msg = await bot.get_messages(target_chat, ids=msg_id)
                     except Exception:
                         pass
 
                     try:
-                        await bot.delete_messages(chat_id, msg_id)
+                        # 🗑️ Purani post delete karna (Ab 3 din baad bhi fail nahi hoga)
+                        await bot.delete_messages(target_chat, msg_id)
                     except Exception as e:
                         logging.info(f"Post already gone: {e}")
 
                     if original_msg:
                         try:
-                            # Direct message structure injection cloning (Chhupa link exact safe rahega)
-                            new_msg = await bot.send_message(chat_id, original_msg)
+                            # ♻️ Direct message cloning (Chhupa link exact safe rahega)
+                            new_msg = await bot.send_message(target_chat, original_msg)
                             if new_msg:
                                 delete_post_from_cloud(msg_id)
                                 save_post_to_cloud(chat_id, new_msg.id)
@@ -319,7 +327,59 @@ async def check_and_rotate_posts():
         await asyncio.sleep(15)
 
 
-# 🚀 CLIENT RUNNER
+# 7. 🚀 PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND
+@bot.on(events.NewMessage(pattern=r'/sync_posts(?: (\d+))?'))
+async def sync_old_posts(event):
+    if event.sender_id != OWNER_ID:
+        await event.reply("❌ Aap is bot ke admin nahi hain!")
+        return
+        
+    # Default 50 posts scan karega, ya fir aap jo number dalenge (jaise /sync_posts 100)
+    limit = event.pattern_match.group(1)
+    limit = int(limit) if limit else 50
+    
+    TARGET_CHANNEL = -1003987208966 # Aapka Premium Mod Channel ID
+    
+    msg = await event.reply(f"⏳ **Scanning...**\nChannel ki pichli {limit} posts ko database me add kiya jaa raha hai. Kripya wait karein...")
+    
+    count = 0
+    try:
+        # Pehle se save posts check karna taaki double na ho jaye
+        existing_posts = load_all_cloud_posts()
+        existing_ids = [str(v['message_id']) for v in existing_posts.values()] if existing_posts else []
+        
+        # Channel ki purani posts fetch karna
+        async for channel_msg in event.client.iter_messages(TARGET_CHANNEL, limit=limit):
+            if channel_msg.id <= 1: 
+                continue
+                
+            # Sirf un posts ko pakdega jinme Text ya Photo+Caption hai
+            if not channel_msg.text: 
+                continue 
+                
+            msg_id_str = str(channel_msg.id)
+            if msg_id_str not in existing_ids:
+                # 🚀 Smart Staggering: Har post ke rotation time me 5 min ka gap daalna (Taki Spam Block na ho)
+                staggered_time = datetime.now() - timedelta(minutes=(count * 5))
+                
+                data = {
+                    "chat_id": TARGET_CHANNEL,
+                    "message_id": channel_msg.id,
+                    "post_time": staggered_time.isoformat()
+                }
+                
+                # Firebase me save karna
+                requests.put(f"{FIREBASE_URL}auto_posts/{channel_msg.id}.json", json=data)
+                count += 1
+                
+        await msg.edit(f"✅ **SUCCESS!**\n\nTotal **{count} purani posts** system me add ho gayi hain.\n\nAb ye saari posts bhi aapke set kiye huye time (jaise 12 ghante ya 3 din) ke baad automatic Delete aur Repost hoti rahengi!")
+        
+    except Exception as e:
+        await msg.edit(f"❌ **Error Aaya:**\n`{str(e)}`")
+    raise events.StopPropagation
+
+
+# 🚀 CLIENT RUNNER (Isme maine loop change fix add kar diya hai)
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
     bot.loop.create_task(check_and_rotate_posts())

@@ -1,4 +1,4 @@
-Import os
+import os
 import sys
 import time
 import logging
@@ -6,6 +6,7 @@ import requests
 import asyncio
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
+from telethon.tl.functions.channels import GetFullChannelRequest
 
 logging.basicConfig(level=logging.INFO)
 
@@ -184,26 +185,80 @@ async def track_channel_posts(event):
         save_post_to_cloud(chat_id, msg_id)
 
 
-# 5. 👥 GROUP AUTOMATIC REPLY (Pehle Ki Tarah Bina Ruke Chalega)
+# 5. 👥 GROUP AUTOMATIC REPLY
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     if not event.is_group:
         return
         
     message_text = event.raw_text.lower() if event.raw_text else ""
-    if message_text.startswith('/'):
+    if not message_text or message_text.startswith('/'):
         return
         
-    current_links = load_links_from_firebase()
-    for app_name, download_link in current_links.items():
-        if app_name in message_text:
+    stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye"}
+    
+    words = message_text.split()
+    cleaned_words = [w for w in words if w not in stop_words]
+    app_name = " ".join(cleaned_words).strip()
+    
+    if not app_name or len(app_name) < 2:
+        return
+        
+    if not hasattr(handle_group_replies, "linked_channels"):
+        handle_group_replies.linked_channels = {}
+        handle_group_replies.channel_usernames = {}
+        
+    chat_id = event.chat_id
+    channel_id = handle_group_replies.linked_channels.get(chat_id)
+    
+    if not channel_id:
+        try:
+            full_chat = await event.client(GetFullChannelRequest(chat_id))
+            channel_id = full_chat.full_chat.linked_chat_id
+            if channel_id:
+                handle_group_replies.linked_channels[chat_id] = channel_id
+        except Exception:
+            pass
+            
+    if not channel_id:
+        return
+        
+    found_msg = None
+    async for msg in event.client.iter_messages(channel_id, limit=500):
+        if msg.text and app_name in msg.text.lower():
+            found_msg = msg
+            break
+            
+    display_name = app_name.upper()
+            
+    if found_msg:
+        try:
+            username = handle_group_replies.channel_usernames.get(channel_id)
+            if username is None:
+                channel = await event.client.get_entity(channel_id)
+                username = getattr(channel, 'username', False)
+                handle_group_replies.channel_usernames[channel_id] = username
+                
+            if username:
+                post_link = f"https://t.me/{username}/{found_msg.id}"
+            else:
+                c_id = str(channel_id).replace("-100", "")
+                post_link = f"https://t.me/c/{c_id}/{found_msg.id}"
+                
             reply_text = (
                 f"👋 Hello,\n\n"
-                f"📥 **{app_name.upper()}** ka naya download link ye raha:\n"
-                f"👉 {download_link}"
+                f"📥 **{display_name}** channel par available hai.\n\n"
+                f"👉 {post_link}"
             )
             await event.reply(reply_text, link_preview=False)
-            break
+        except Exception:
+            pass
+    else:
+        reply_text = (
+            f"⏳ **{display_name}** Coming Soon...\n\n"
+            f"Ye app abhi channel par upload nahi hai."
+        )
+        await event.reply(reply_text, link_preview=False)
 
 
 # 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)

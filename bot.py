@@ -184,7 +184,6 @@ async def track_channel_posts(event):
         msg_id = event.id
         save_post_to_cloud(chat_id, msg_id)
 
-
 # 5. 👥 GROUP AUTOMATIC REPLY
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
@@ -195,7 +194,8 @@ async def handle_group_replies(event):
     if not message_text or message_text.startswith('/'):
         return
         
-    TARGET_CHANNEL_ID = -1003987208966
+    # 🛠️ Yahan ID ki jagah ab aapka Channel Username laga diya hai
+    TARGET_CHANNEL = 'PRMMOD'
     
     stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye"}
     
@@ -210,36 +210,20 @@ async def handle_group_replies(event):
     display_name = app_name.upper()
     
     try:
-        try:
-            channel_entity = await event.client.get_entity(TARGET_CHANNEL_ID)
-        except Exception:
-            channel_entity = TARGET_CHANNEL_ID
-            
-        async for msg in event.client.iter_messages(channel_entity, limit=500):
+        # Username use karne se bot bina cache ke bhi history padh lega
+        async for msg in event.client.iter_messages(TARGET_CHANNEL, limit=500):
             if msg.text and app_name in msg.text.lower():
                 found_msg = msg
                 break
                     
     except Exception as e:
-        await event.reply(f"⚠️ **SYSTEM DEBUG (Search Error):**\n`{str(e)}`\n\n👉 Bot ko Channel me Admin zaroor banayein.")
+        await event.reply(f"⚠️ **SYSTEM DEBUG (Search Error):**\n`{str(e)}`")
         return
             
     if found_msg:
         try:
-            if not hasattr(handle_group_replies, "channel_username"):
-                try:
-                    channel_ent = await event.client.get_entity(TARGET_CHANNEL_ID)
-                    handle_group_replies.channel_username = getattr(channel_ent, 'username', False)
-                except Exception:
-                    handle_group_replies.channel_username = False
-                    
-            username = handle_group_replies.channel_username
-                
-            if username:
-                post_link = f"https://t.me/{username}/{found_msg.id}"
-            else:
-                c_id = str(TARGET_CHANNEL_ID).replace("-100", "")
-                post_link = f"https://t.me/c/{c_id}/{found_msg.id}"
+            # Seedha username se link bana diya
+            post_link = f"https://t.me/{TARGET_CHANNEL}/{found_msg.id}"
                 
             reply_text = (
                 f"👋 Hello,\n\n"
@@ -255,6 +239,7 @@ async def handle_group_replies(event):
             f"Ye app abhi channel par upload nahi hai."
         )
         await event.reply(reply_text, link_preview=False)
+
 
 # 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
 async def check_and_rotate_posts():

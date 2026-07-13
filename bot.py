@@ -184,6 +184,7 @@ async def track_channel_posts(event):
         msg_id = event.id
         save_post_to_cloud(chat_id, msg_id)
 
+
 # 5. 👥 GROUP AUTOMATIC REPLY
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
@@ -214,16 +215,10 @@ async def handle_group_replies(event):
         except Exception:
             channel_entity = TARGET_CHANNEL_ID
             
-        async for msg in event.client.iter_messages(channel_entity, search=app_name, limit=10):
-            if msg.text:
+        async for msg in event.client.iter_messages(channel_entity, limit=500):
+            if msg.text and app_name in msg.text.lower():
                 found_msg = msg
                 break
-                
-        if not found_msg:
-            async for msg in event.client.iter_messages(channel_entity, limit=200):
-                if msg.text and app_name in msg.text.lower():
-                    found_msg = msg
-                    break
                     
     except Exception as e:
         await event.reply(f"⚠️ **SYSTEM DEBUG (Search Error):**\n`{str(e)}`\n\n👉 Bot ko Channel me Admin zaroor banayein.")
@@ -260,7 +255,6 @@ async def handle_group_replies(event):
             f"Ye app abhi channel par upload nahi hai."
         )
         await event.reply(reply_text, link_preview=False)
-
 
 # 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
 async def check_and_rotate_posts():

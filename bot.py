@@ -184,7 +184,7 @@ async def track_channel_posts(event):
         msg_id = event.id
         save_post_to_cloud(chat_id, msg_id)
 
-# 5. 👥 GROUP AUTOMATIC REPLY (BOT HISTORY BAN BYPASS TRICK)
+# 5. 👥 GROUP AUTOMATIC REPLY (SMART INTENT DETECTION + HACKER TRICK)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     if not event.is_group:
@@ -194,57 +194,61 @@ async def handle_group_replies(event):
     if not message_text or message_text.startswith('/'):
         return
         
-    # Aapka channel username
-    TARGET_CHANNEL = 'PRMMOD'
+    # --- 🧠 SMART INTENT DETECTION ---
+    # Sirf in words ke hone par hi bot 'Coming Soon' bolega (Random chat ko ignore karega)
+    intent_keywords = {"do", "de", "link", "app", "apk", "mod", "chahiye", "dedo", "bhejo", "tv", "movie", "series", "ott", "premium"}
+    message_words = message_text.split()
     
-    stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye", "pro", "premium"}
+    # Kya user ne sach me koi App/Link manga hai?
+    has_intent = any(word in intent_keywords for word in message_words)
     
-    words = message_text.split()
-    cleaned_words = [w for w in words if w not in stop_words]
+    # Message ko saaf karna (faltu words hatana)
+    stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye", "dedo", "bhejo", "mujhe", "ko", "mera", "yaar"}
+    cleaned_words = [w for w in message_words if w not in stop_words]
     app_name = " ".join(cleaned_words).strip()
     
+    # Agar message me bacha hi kuch nahi (eg: "bhai kya hai") to ignore karo
     if not app_name or len(app_name) < 2:
         return
         
+    TARGET_CHANNEL = 'PRMMOD'
     found_msg = None
     display_name = app_name.upper()
     
     try:
-        # --- 🚀 HACKER TRICK: Bypassing Telegram Bot History Ban ---
-        # Step 1: Pata lagana ki channel me kitni posts hain (1 call me)
-        test_ids = [20000, 15000, 10000, 8000, 5000, 3000, 1000, 500, 200]
+        # 🚀 FAST CHUNK SEARCH (Bypassing History Ban)
+        test_ids = [20000, 15000, 10000, 8000, 5000, 3000, 1000, 500, 200, 100, 50]
         max_id = 500
         
         try:
             milestones = await event.client.get_messages(TARGET_CHANNEL, ids=test_ids)
             for i, m in enumerate(milestones):
                 if m is not None:
-                    max_id = test_ids[i] + 500 # Channel ki current max ID mil gayi
+                    max_id = test_ids[i] + 500 
                     break
         except Exception:
             pass
             
-        # Step 2: Ab Max ID se le kar reverse me Message ID check karenge (No History Ban)
-        search_ids = list(range(max_id, 0, -1))
+        # Sirf aakhiri 1000 posts scan karenge speed ke liye
+        min_id = max(0, max_id - 1000)
+        search_ids = list(range(max_id, min_id, -1))
         chunk_size = 200
         
         for i in range(0, len(search_ids), chunk_size):
             chunk = search_ids[i:i + chunk_size]
-            
-            # Fetch specific IDs (Bots ko ye karne ki full permission hai)
             msgs = await event.client.get_messages(TARGET_CHANNEL, ids=chunk)
             
             for msg in msgs:
-                if msg and msg.text and app_name in msg.text.lower():
-                    found_msg = msg
-                    break
-                    
+                if msg and msg.text:
+                    # Agar user ne 'kuku' likha, aur post me 'Kuku TV' hai -> Perfect Match ho jayega!
+                    if app_name in msg.text.lower():
+                        found_msg = msg
+                        break
             if found_msg:
                 break
                     
-    except Exception as e:
-        await event.reply(f"⚠️ **SYSTEM DEBUG (Bypass Error):**\n`{str(e)}`")
-        return
+    except Exception:
+        pass
             
     if found_msg:
         try:
@@ -256,110 +260,49 @@ async def handle_group_replies(event):
                 f"👉 {post_link}"
             )
             await event.reply(reply_text, link_preview=False)
-        except Exception as e:
-            await event.reply(f"⚠️ **SYSTEM DEBUG (Link Generate Error):**\n`{str(e)}`")
+        except Exception:
+            pass
     else:
-        reply_text = (
-            f"⏳ **{display_name}** Coming Soon...\n\n"
-            f"Ye app abhi channel par upload nahi hai."
-        )
-        await event.reply(reply_text, link_preview=False)
-
-
-# 🔄 6. BACKGROUND ENGINE (Rotation Management + 3 Day Delete Fix)
-async def check_and_rotate_posts():
-    while True:
-        # ⏰ CRITICAL AUTO-REBOOT LAYER
-        # Agar bot ko chale huye 4 ghante 45 minute ho gaye hain, toh khud restart hoga
-        elapsed_time = datetime.now() - START_TIME
-        if elapsed_time >= timedelta(hours=4, minutes=45):
-            print("🔄 [SAFE REBOOT] 4 Ghante 45 Minute Pure Huye! Server restarting to prevent force-kill...")
-            os.execv(sys.executable, ['python'] + sys.argv)
-
-        try:
-            interval_minutes = get_rotate_time_minutes()
-            cloud_posts = load_all_cloud_posts()
-            
-            for key_id, post_data in cloud_posts.items():
-                chat_id = post_data["chat_id"]
-                msg_id = post_data["message_id"]
-                post_time_str = post_data["post_time"]
-                
-                post_time = datetime.fromisoformat(post_time_str)
-                time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
-                
-                if post_time <= time_threshold:
-                    original_msg = None
-                    
-                    # 🚀 3-DAY BUG FIX: Bot ki memory (Cache) refresh karna 
-                    try:
-                        target_chat = await bot.get_entity(chat_id)
-                    except Exception:
-                        target_chat = chat_id
-
-                    try:
-                        # Exact full message entity pull karna (Hidden links safe rahenge)
-                        original_msg = await bot.get_messages(target_chat, ids=msg_id)
-                    except Exception:
-                        pass
-
-                    try:
-                        # 🗑️ Purani post delete karna (Ab 3 din baad bhi fail nahi hoga)
-                        await bot.delete_messages(target_chat, msg_id)
-                    except Exception as e:
-                        logging.info(f"Post already gone: {e}")
-
-                    if original_msg:
-                        try:
-                            # ♻️ Direct message cloning (Chhupa link exact safe rahega)
-                            new_msg = await bot.send_message(target_chat, original_msg)
-                            if new_msg:
-                                delete_post_from_cloud(msg_id)
-                                save_post_to_cloud(chat_id, new_msg.id)
-                        except Exception as e:
-                            logging.error(f"Repost failed: {e}")
-                    else:
-                        delete_post_from_cloud(msg_id)
-                        
-        except Exception as e:
-            logging.error(f"Cloud Rotation Engine error: {e}")
-            
-        await asyncio.sleep(15)
+        # 🛑 FIX: Agar App nahi mili aur user ne 'do/link' manga hai, tabhi reply karega
+        if has_intent:
+            reply_text = (
+                f"⏳ **{display_name}** Coming Soon...\n\n"
+                f"Ye app abhi channel par upload nahi hai."
+            )
+            await event.reply(reply_text, link_preview=False)
 
 
 # 7. 🚀 PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND
 @bot.on(events.NewMessage(pattern=r'/sync_posts(?: (\d+))?'))
 async def sync_old_posts(event):
-    if event.sender_id != OWNER_ID:
-        await event.reply("❌ Aap is bot ke admin nahi hain!")
+    # 🛑 ADMIN PERMISSION FIX: Ab Owner ke sath Anonymous Admin / Channel Admin sab allow hain
+    valid_admins = [OWNER_ID, -1003987208966, 1087968824]
+    
+    if event.sender_id not in valid_admins:
+        # Agar Telegram abhi bhi ID chhupata hai, to bot aapko ID batayega, aur aap DM me jaakar command de sakte hain.
+        await event.reply(f"❌ Aap is bot ke admin nahi hain!\n(Aapki system ID `{event.sender_id}` hai)\n\n👉 **Tip:** Ye command group me nahi, balki seedha Bot ke **Private Message (DM)** me dekar dekhein.")
         return
         
-    # Default 50 posts scan karega, ya fir aap jo number dalenge (jaise /sync_posts 100)
     limit = event.pattern_match.group(1)
     limit = int(limit) if limit else 50
     
-    TARGET_CHANNEL = -1003987208966 # Aapka Premium Mod Channel ID
+    TARGET_CHANNEL = -1003987208966 # Aapka Channel ID
     
     msg = await event.reply(f"⏳ **Scanning...**\nChannel ki pichli {limit} posts ko database me add kiya jaa raha hai. Kripya wait karein...")
     
     count = 0
     try:
-        # Pehle se save posts check karna taaki double na ho jaye
         existing_posts = load_all_cloud_posts()
         existing_ids = [str(v['message_id']) for v in existing_posts.values()] if existing_posts else []
         
-        # Channel ki purani posts fetch karna
         async for channel_msg in event.client.iter_messages(TARGET_CHANNEL, limit=limit):
             if channel_msg.id <= 1: 
                 continue
-                
-            # Sirf un posts ko pakdega jinme Text ya Photo+Caption hai
             if not channel_msg.text: 
                 continue 
                 
             msg_id_str = str(channel_msg.id)
             if msg_id_str not in existing_ids:
-                # 🚀 Smart Staggering: Har post ke rotation time me 5 min ka gap daalna (Taki Spam Block na ho)
                 staggered_time = datetime.now() - timedelta(minutes=(count * 5))
                 
                 data = {
@@ -368,22 +311,11 @@ async def sync_old_posts(event):
                     "post_time": staggered_time.isoformat()
                 }
                 
-                # Firebase me save karna
                 requests.put(f"{FIREBASE_URL}auto_posts/{channel_msg.id}.json", json=data)
                 count += 1
                 
-        await msg.edit(f"✅ **SUCCESS!**\n\nTotal **{count} purani posts** system me add ho gayi hain.\n\nAb ye saari posts bhi aapke set kiye huye time (jaise 12 ghante ya 3 din) ke baad automatic Delete aur Repost hoti rahengi!")
+        await msg.edit(f"✅ **SUCCESS!**\n\nTotal **{count} purani posts** system me add ho gayi hain.\nAb ye saari posts automatic rotate hoti rahengi!")
         
     except Exception as e:
         await msg.edit(f"❌ **Error Aaya:**\n`{str(e)}`")
     raise events.StopPropagation
-
-
-# 🚀 CLIENT RUNNER (Isme maine loop change fix add kar diya hai)
-async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    bot.loop.create_task(check_and_rotate_posts())
-    await bot.run_until_disconnected()
-
-if __name__ == '__main__':
-    bot.loop.run_until_complete(main())

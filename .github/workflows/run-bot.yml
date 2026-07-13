@@ -1,26 +1,32 @@
-name: 24/7 Telegram Bot Runner (Auto-Loop)
+name: Run Bot
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - main
   schedule:
-    - cron: '*/30 * * * *' # Har 30 minute me check karega ki bot chal raha hai ya nahi
+    - cron: '0 */5 * * *' # Backup ke liye (Har 5 ghante me automatic start)
+  workflow_dispatch:
+
+# Agar galti se 2 bot ek sath chalne lagein, toh ye purane wale ko kill kar dega (No spamming)
+concurrency:
+  group: "bot-run"
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-
-      - name: Install dependencies
+          
+      - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install telethon requests
           
       - name: Run Bot
@@ -28,4 +34,5 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          MY_GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }} # Yahan token add kiya hai
         run: python bot.py

@@ -185,7 +185,7 @@ async def track_channel_posts(event):
         save_post_to_cloud(chat_id, msg_id)
 
 
-# 5. 👥 GROUP AUTOMATIC REPLY
+# 5. 👥 GROUP AUTOMATIC REPLY (WITH TELEGRAM DEBUG FOR GITHUB)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     if not event.is_group:
@@ -212,31 +212,49 @@ async def handle_group_replies(event):
     channel_id = handle_group_replies.linked_channels.get(chat_id)
     
     if not channel_id:
+        from telethon.tl.functions.channels import GetFullChannelRequest
         try:
             full_chat = await event.client(GetFullChannelRequest(chat_id))
             channel_id = full_chat.full_chat.linked_chat_id
             if channel_id:
                 handle_group_replies.linked_channels[chat_id] = channel_id
-        except Exception:
-            pass
+            else:
+                # ERROR 1: Agar group aur channel Telegram Settings me link nahi hain
+                await event.reply("⚠️ **SYSTEM DEBUG:**\nBot Group aur Channel dono me admin hai, lekin aapne Telegram settings me in dono ko link nahi kiya hai.\n\n👉 **Fix:** Channel ki Settings > Discussion > 'Add this Group' par click karein.")
+                return
+        except Exception as e:
+            # ERROR 2: Bot check nahi kar pa raha (Permission Issue)
+            await event.reply(f"⚠️ **SYSTEM DEBUG (Channel Link Check Error):**\n`{str(e)}`")
+            return
             
     if not channel_id:
         return
         
     found_msg = None
-    async for msg in event.client.iter_messages(channel_id, limit=500):
-        if msg.text and app_name in msg.text.lower():
-            found_msg = msg
-            break
-            
     display_name = app_name.upper()
+    
+    try:
+        # GitHub par cache banaye rakhne ke liye get_entity
+        try:
+            channel_entity = await event.client.get_entity(channel_id)
+        except Exception:
+            channel_entity = channel_id
+            
+        async for msg in event.client.iter_messages(channel_entity, limit=500):
+            if msg.text and app_name in msg.text.lower():
+                found_msg = msg
+                break
+    except Exception as e:
+        # ERROR 3: Channel messages padhne me dikkat
+        await event.reply(f"⚠️ **SYSTEM DEBUG (Message Search Error):**\n`{str(e)}`\n\n(Lagta hai GitHub server bot ko channel ka data fetch karne mein permission nahi mil rahi).")
+        return
             
     if found_msg:
         try:
             username = handle_group_replies.channel_usernames.get(channel_id)
             if username is None:
-                channel = await event.client.get_entity(channel_id)
-                username = getattr(channel, 'username', False)
+                channel_ent = await event.client.get_entity(channel_id)
+                username = getattr(channel_ent, 'username', False)
                 handle_group_replies.channel_usernames[channel_id] = username
                 
             if username:
@@ -251,15 +269,14 @@ async def handle_group_replies(event):
                 f"👉 {post_link}"
             )
             await event.reply(reply_text, link_preview=False)
-        except Exception:
-            pass
+        except Exception as e:
+            await event.reply(f"⚠️ **SYSTEM DEBUG (Reply Link Error):**\n`{str(e)}`")
     else:
         reply_text = (
             f"⏳ **{display_name}** Coming Soon...\n\n"
             f"Ye app abhi channel par upload nahi hai."
         )
         await event.reply(reply_text, link_preview=False)
-
 
 # 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
 async def check_and_rotate_posts():

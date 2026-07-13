@@ -272,15 +272,91 @@ async def handle_group_replies(event):
             await event.reply(reply_text, link_preview=False)
 
 
-# 7. 🚀 PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND
+# ðŸ”„ 6. BACKGROUND ENGINE (Rotation + 24/7 GitHub Auto-Runner + 3 Day Fix)
+async def check_and_rotate_posts():
+    while True:
+        # â° 24/7 GITHUB AUTO-REBOOT HACK
+        elapsed_time = datetime.now() - START_TIME
+        
+        # Theek 5 ghante 45 minute baad naya server trigger hoga
+        if elapsed_time >= timedelta(hours=5, minutes=45):
+            print("ðŸ”„ [GITHUB SAFE REBOOT] 5 Ghante 45 Min pure hue! Naya server start kar raha hu...")
+            
+            # Aapka GitHub Token aur Repo Name automatically fetch hoga
+            github_token = os.environ.get("MY_GITHUB_TOKEN")
+            repo_name = os.environ.get("GITHUB_REPOSITORY")
+            
+            if github_token and repo_name:
+                try:
+                    url = f"https://api.github.com/repos/{repo_name}/actions/workflows/run-bot.yml/dispatches"
+                    headers = {
+                        "Accept": "application/vnd.github.v3+json",
+                        "Authorization": f"token {github_token}"
+                    }
+                    # GitHub ko request bhej di ki naya Action chalu karo
+                    requests.post(url, headers=headers, json={"ref": "main"})
+                    print("âœ… Naya GitHub Action Server trigger ho gaya!")
+                except Exception as e:
+                    print(f"âŒ API Error: {e}")
+                    
+            # Request bhejte hi purana script turant band ho jayega
+            os._exit(0)
+
+        # --- Purana Rotation Logic (3-Day Fix Ke Sath) ---
+        try:
+            interval_minutes = get_rotate_time_minutes()
+            cloud_posts = load_all_cloud_posts()
+            
+            for key_id, post_data in cloud_posts.items():
+                chat_id = post_data["chat_id"]
+                msg_id = post_data["message_id"]
+                post_time_str = post_data["post_time"]
+                
+                post_time = datetime.fromisoformat(post_time_str)
+                time_threshold = datetime.now() - timedelta(minutes=interval_minutes)
+                
+                if post_time <= time_threshold:
+                    original_msg = None
+                    try:
+                        target_chat = await bot.get_entity(chat_id)
+                    except Exception:
+                        target_chat = chat_id
+
+                    try:
+                        original_msg = await bot.get_messages(target_chat, ids=msg_id)
+                    except Exception:
+                        pass
+
+                    try:
+                        await bot.delete_messages(target_chat, msg_id)
+                    except Exception as e:
+                        logging.info(f"Post already gone: {e}")
+
+                    if original_msg:
+                        try:
+                            new_msg = await bot.send_message(target_chat, original_msg)
+                            if new_msg:
+                                delete_post_from_cloud(msg_id)
+                                save_post_to_cloud(chat_id, new_msg.id)
+                        except Exception as e:
+                            logging.error(f"Repost failed: {e}")
+                    else:
+                        delete_post_from_cloud(msg_id)
+                        
+        except Exception as e:
+            logging.error(f"Cloud Rotation Engine error: {e}")
+            
+        await asyncio.sleep(15)
+
+
+# 7. ðŸš€ PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND
 @bot.on(events.NewMessage(pattern=r'/sync_posts(?: (\d+))?'))
 async def sync_old_posts(event):
-    # 🛑 ADMIN PERMISSION FIX: Ab Owner ke sath Anonymous Admin / Channel Admin sab allow hain
+    # ðŸ›‘ ADMIN PERMISSION FIX: Ab Owner ke sath Anonymous Admin / Channel Admin sab allow hain
     valid_admins = [OWNER_ID, -1003987208966, 1087968824]
     
     if event.sender_id not in valid_admins:
-        # Agar Telegram abhi bhi ID chhupata hai, to bot aapko ID batayega, aur aap DM me jaakar command de sakte hain.
-        await event.reply(f"❌ Aap is bot ke admin nahi hain!\n(Aapki system ID `{event.sender_id}` hai)\n\n👉 **Tip:** Ye command group me nahi, balki seedha Bot ke **Private Message (DM)** me dekar dekhein.")
+        await event.reply(f"âŒ Aap is bot ke admin nahi hain!\n(Aapki system ID `{event.sender_id}` hai)\n\nðŸ‘‰ **Tip:** Ye command group me nahi, balki seedha Bot ke **Private Message (DM)** me dekar dekhein.")
         return
         
     limit = event.pattern_match.group(1)
@@ -288,7 +364,7 @@ async def sync_old_posts(event):
     
     TARGET_CHANNEL = -1003987208966 # Aapka Channel ID
     
-    msg = await event.reply(f"⏳ **Scanning...**\nChannel ki pichli {limit} posts ko database me add kiya jaa raha hai. Kripya wait karein...")
+    msg = await event.reply(f"â³ **Scanning...**\nChannel ki pichli {limit} posts ko database me add kiya jaa raha hai. Kripya wait karein...")
     
     count = 0
     try:
@@ -314,9 +390,19 @@ async def sync_old_posts(event):
                 requests.put(f"{FIREBASE_URL}auto_posts/{channel_msg.id}.json", json=data)
                 count += 1
                 
-        await msg.edit(f"✅ **SUCCESS!**\n\nTotal **{count} purani posts** system me add ho gayi hain.\nAb ye saari posts automatic rotate hoti rahengi!")
+        await msg.edit(f"âœ… **SUCCESS!**\n\nTotal **{count} purani posts** system me add ho gayi hain.\nAb ye saari posts automatic rotate hoti rahengi!")
         
     except Exception as e:
-        await msg.edit(f"❌ **Error Aaya:**\n`{str(e)}`")
+        await msg.edit(f"âŒ **Error Aaya:**\n`{str(e)}`")
     raise events.StopPropagation
+
+
+# ðŸš€ CLIENT RUNNER
+async def main():
+    await bot.start(bot_token=BOT_TOKEN)
+    bot.loop.create_task(check_and_rotate_posts())
+    await bot.run_until_disconnected()
+
+if __name__ == '__main__':
+    bot.loop.run_until_complete(main())
     

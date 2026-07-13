@@ -319,3 +319,4 @@ async def sync_old_posts(event):
     except Exception as e:
         await msg.edit(f"❌ **Error Aaya:**\n`{str(e)}`")
     raise events.StopPropagation
+    

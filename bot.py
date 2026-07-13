@@ -349,14 +349,13 @@ async def check_and_rotate_posts():
         await asyncio.sleep(15)
 
 
-# 7. ðŸš€ PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND
+# 7. ðŸš€ PURANI POSTS KO EK SATH DATABASE MEIN DAALNE WALA COMMAND (BYPASS TRICK KE SATH)
 @bot.on(events.NewMessage(pattern=r'/sync_posts(?: (\d+))?'))
 async def sync_old_posts(event):
-    # ðŸ›‘ ADMIN PERMISSION FIX: Ab Owner ke sath Anonymous Admin / Channel Admin sab allow hain
     valid_admins = [OWNER_ID, -1003987208966, 1087968824]
     
     if event.sender_id not in valid_admins:
-        await event.reply(f"âŒ Aap is bot ke admin nahi hain!\n(Aapki system ID `{event.sender_id}` hai)\n\nðŸ‘‰ **Tip:** Ye command group me nahi, balki seedha Bot ke **Private Message (DM)** me dekar dekhein.")
+        await event.reply(f"âŒ Aap is bot ke admin nahi hain!\n(Aapki system ID `{event.sender_id}` hai)\n\nðŸ‘‰ **Tip:** Ye command seedha Bot ke Private Message (DM) me dein.")
         return
         
     limit = event.pattern_match.group(1)
@@ -371,14 +370,42 @@ async def sync_old_posts(event):
         existing_posts = load_all_cloud_posts()
         existing_ids = [str(v['message_id']) for v in existing_posts.values()] if existing_posts else []
         
-        async for channel_msg in event.client.iter_messages(TARGET_CHANNEL, limit=limit):
-            if channel_msg.id <= 1: 
-                continue
-            if not channel_msg.text: 
-                continue 
-                
+        # --- ðŸš€ HACKER TRICK: Bypassing History Ban ---
+        max_id = 500
+        test_ids = [50000, 30000, 20000, 10000, 5000, 3000, 1000, 500, 100]
+        try:
+            milestones = await event.client.get_messages(TARGET_CHANNEL, ids=test_ids)
+            for i, m in enumerate(milestones):
+                if m is not None:
+                    max_id = test_ids[i] + 500
+                    break
+        except Exception:
+            pass
+            
+        valid_msgs = []
+        search_ids = list(range(max_id, 0, -1))
+        chunk_size = 100
+        
+        # Reverse me ID check karega bina history mange
+        for i in range(0, len(search_ids), chunk_size):
+            if len(valid_msgs) >= limit:
+                break
+            chunk = search_ids[i:i + chunk_size]
+            
+            # Fetch specific IDs (Bots allowed)
+            msgs = await event.client.get_messages(TARGET_CHANNEL, ids=chunk)
+            
+            for channel_msg in msgs:
+                if channel_msg and channel_msg.text and channel_msg.id > 1:
+                    valid_msgs.append(channel_msg)
+                    if len(valid_msgs) >= limit:
+                        break
+                        
+        # ðŸš€ Ab pakdi gayi posts ko Firebase me save karna
+        for channel_msg in valid_msgs:
             msg_id_str = str(channel_msg.id)
             if msg_id_str not in existing_ids:
+                # Har post me 5 min ka gap (Spam se bachne ke liye)
                 staggered_time = datetime.now() - timedelta(minutes=(count * 5))
                 
                 data = {
@@ -395,14 +422,4 @@ async def sync_old_posts(event):
     except Exception as e:
         await msg.edit(f"âŒ **Error Aaya:**\n`{str(e)}`")
     raise events.StopPropagation
-
-
-# ðŸš€ CLIENT RUNNER
-async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    bot.loop.create_task(check_and_rotate_posts())
-    await bot.run_until_disconnected()
-
-if __name__ == '__main__':
-    bot.loop.run_until_complete(main())
     

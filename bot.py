@@ -1,10 +1,10 @@
-import os
+Import os
 import sys
 import time
 import logging
 import requests
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 
 logging.basicConfig(level=logging.INFO)
@@ -27,22 +27,18 @@ bot = TelegramClient('dynamic_filter_bot', API_ID, API_HASH)
 # 👑 OWNER KI ASLI USER ID
 OWNER_ID = 8587571289
 
-# ⏰ SERVER START TIME TRACKER
+# ⏰ SERVER START TIME TRACKER (Auto-Reboot matrix ke liye)
 START_TIME = datetime.now()
-
-# Global Variable to hold dynamic channel ID
-TARGET_CHANNEL_ID = None
 
 
 # --- 📂 CLOUD FIREBASE DATABASE LOGIC ---
 
-def save_post_to_cloud(chat_id, message_id, custom_time=None):
+def save_post_to_cloud(chat_id, message_id):
     try:
-        post_time = custom_time if custom_time else datetime.now().isoformat()
         data = {
             "chat_id": chat_id,
             "message_id": message_id,
-            "post_time": post_time
+            "post_time": datetime.now().isoformat()
         }
         requests.put(f"{FIREBASE_URL}auto_posts/{message_id}.json", json=data)
         return True
@@ -65,6 +61,23 @@ def delete_post_from_cloud(message_id):
     except Exception as e:
         logging.error(f"Firebase delete error: {e}")
 
+def load_links_from_firebase():
+    try:
+        response = requests.get(f"{FIREBASE_URL}links.json")
+        if response.status_code == 200 and response.json():
+            return response.json()
+    except Exception as e:
+        logging.error(f"Firebase load error: {e}")
+    return {}
+
+def save_link_to_firebase(app_name, download_link):
+    try:
+        requests.put(f"{FIREBASE_URL}links/{app_name}.json", json=download_link)
+        return True
+    except Exception as e:
+        logging.error(f"Firebase save error: {e}")
+        return False
+
 def get_rotate_time_minutes():
     try:
         response = requests.get(f"{FIREBASE_URL}rotate_config/minutes.json")
@@ -72,48 +85,27 @@ def get_rotate_time_minutes():
             return int(response.json())
     except Exception:
         pass
-    return 4320  # Default 3 Din
+    return 720  # Default 12 Ghante
 
 
-# 🛠️ 1. SAFE BACKGROUND HISTORICAL SYNC
-async def sync_historical_channel_posts(target_channel_id):
-    logging.info(f"🔄 Starting background sync for ID: {target_channel_id}...")
-    try:
-        cloud_posts = load_all_cloud_posts()
-        existing_msg_ids = {int(k) for k in cloud_posts.keys()} if cloud_posts else set()
-        
-        async for message in bot.iter_messages(target_channel_id, limit=100):
-            if message.text and not message.text.startswith('/'):
-                if message.id not in existing_msg_ids:
-                    asli_time = message.date.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-                    save_post_to_cloud(target_channel_id, message.id, custom_time=asli_time)
-                    await asyncio.sleep(2)  # High execution gap to keep connection safe
-        logging.info("✅ Background historical sync completed successfully!")
-    except Exception as e:
-        logging.error(f"Error during historical sync: {e}")
-
-
-# 👑 2. SECRET OWNER ALIVE TESTER
-@bot.on(events.NewMessage(incoming=True))
-async def owner_alive_tester(event):
-    if event.is_private and event.sender_id == OWNER_ID:
-        msg_text = event.raw_text.lower().strip() if event.raw_text else ""
-        if msg_text == "hello":
-            await event.reply("👑 **Hello MOD Owner!** Aapka bot 100% fully active hai aur background me sahi se daud raha hai. 🟢")
-            raise events.StopPropagation
-
-
-# ⚙️ 3. DYNAMIC FILTER INFO COMMAND
+# 1. ⚙️ LINK SET/UPDATE COMMAND
 @bot.on(events.NewMessage(pattern=r'/filter (.+?) (https?://\S+)'))
 async def set_filter(event):
     if event.sender_id != OWNER_ID:
         await event.reply("❌ Aap is bot ke admin nahi hain!")
         return
-    await event.reply("ℹ️ Filter ki zaroorat nahi hai. Bot automatic live search kar leta hai.")
+        
+    app_name = event.pattern_match.group(1).lower().strip()
+    download_link = event.pattern_match.group(2).strip()
+    
+    if save_link_to_firebase(app_name, download_link):
+        await event.reply(f"✅ Success! App **{app_name.upper()}** ka link Cloud Firebase mein permanent save ho gaya.\n🔗 Link: {download_link}")
+    else:
+        await event.reply("❌ Firebase Database mein save karne mein koi galti hui!")
     raise events.StopPropagation
 
 
-# ⏱️ 4. TELEGRAM SE TIME CONTROL SET KARNA
+# 2. ⏱️ TELEGRAM SE TIME CONTROL SET KARNA
 @bot.on(events.NewMessage(pattern=r'/rotate_time (\d+)'))
 async def set_rotate_time(event):
     if event.sender_id != OWNER_ID:
@@ -121,11 +113,15 @@ async def set_rotate_time(event):
         return
     
     minutes = int(event.pattern_match.group(1))
+    
+    # Validation info array UI message ke liye
     msg_info = f"{minutes} minutes"
     if minutes == 1: msg_info = "1 Minute (Testing Only)"
+    elif minutes == 300: msg_info = "5 Ghante"
     elif minutes == 720: msg_info = "12 Ghante"
     elif minutes == 1440: msg_info = "1 Din"
     elif minutes == 4320: msg_info = "3 Din"
+    elif minutes == 10080: msg_info = "7 Din"
 
     try:
         requests.put(f"{FIREBASE_URL}rotate_config/minutes.json", json=minutes)
@@ -135,7 +131,7 @@ async def set_rotate_time(event):
     raise events.StopPropagation
 
 
-# 💀 5. LIFETIME POST DELETE FROM BOT LOOP
+# 3. 💀 LIFETIME POST DELETE FROM BOT LOOP
 @bot.on(events.NewMessage(pattern=r'/killpost'))
 async def kill_post_handler(event):
     if not event.is_reply:
@@ -153,119 +149,80 @@ async def kill_post_handler(event):
             c_id = reply_msg.fwd_from.saved_from_peer.channel_id
             target_chat_id = int(f"-100{c_id}") if not str(c_id).startswith("-100") else c_id
 
+    if reply_msg.reply_to and reply_msg.reply_to.reply_to_top_id:
+        target_msg_id = reply_msg.reply_to.reply_to_top_id
+
     delete_post_from_cloud(target_msg_id)
     delete_post_from_cloud(reply_msg.id)
     
-    try: await bot.delete_messages(target_chat_id, target_msg_id)
-    except Exception: pass
-    try: await bot.delete_messages(event.chat_id, reply_msg.id)
-    except Exception: pass
-    try: await event.delete()
-    except Exception: pass
+    try:
+        await bot.delete_messages(target_chat_id, target_msg_id)
+    except Exception:
+        pass
+    try:
+        await bot.delete_messages(event.chat_id, reply_msg.id)
+    except Exception:
+        pass
+    try:
+        await event.delete()
+    except Exception:
+        pass
         
-    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Post permanent clean ho gayi hai.")
+    await bot.send_message(event.chat_id, "🗑️ **Lifetime Deleted!** Post system se permanent clean ho gayi hai.")
     raise events.StopPropagation
 
 
-# 🚀 6. CHANNEL POST TRACKING LAYER
+# 4. 🚀 CHANNEL POST TRACKING LAYER (Hidden Link Friendly Object Saver)
 @bot.on(events.NewMessage)
 async def track_channel_posts(event):
-    global TARGET_CHANNEL_ID
     if event.is_channel and not event.is_group:
         if event.text and event.text.startswith('/'):
             return
-        TARGET_CHANNEL_ID = event.chat_id
-        try:
-            requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
-        except Exception:
-            pass
-        save_post_to_cloud(event.chat_id, event.id)
+
+        chat_id = event.chat_id
+        msg_id = event.id
+        save_post_to_cloud(chat_id, msg_id)
 
 
-# 👥 7. TELETHON 1.38.1 LOCAL SAFE ENGINE (Syntax Error Fixed Here)
+# 5. 👥 GROUP AUTOMATIC REPLY (Pehle Ki Tarah Bina Ruke Chalega)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
-    global TARGET_CHANNEL_ID
     if not event.is_group:
         return
         
     message_text = event.raw_text.lower() if event.raw_text else ""
     if message_text.startswith('/'):
         return
-
-    clean_query = message_text
-    for word in ["do", "chahiye", "link", "app", "tv", "kisi ke paas", "hai", "kya", "bhai", "please", "plz", "de do", "dena"]:
-        clean_query = clean_query.replace(word, "")
-    
-    clean_query = clean_query.strip()
-    if not clean_query or len(clean_query) < 2:
-        return
-
-    try:
-        if not TARGET_CHANNEL_ID:
-            try:
-                res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
-                if res.status_code == 200 and res.json():
-                    TARGET_CHANNEL_ID = int(res.json())
-            except Exception:
-                pass
-
-        if not TARGET_CHANNEL_ID:
-            cloud_posts = load_all_cloud_posts()
-            if cloud_posts:
-                first_key = list(cloud_posts.keys())[0]
-                TARGET_CHANNEL_ID = int(cloud_posts[first_key].get("chat_id"))
-
-        if not TARGET_CHANNEL_ID:
-            return
-
-        found_msg = None
-        # Syntax Error Fixed: Direct pass to async loop instead of invalid variable tag
-        async for message in bot.iter_messages(TARGET_CHANNEL_ID, limit=80):
-            if message.text and clean_query in message.text.lower():
-                found_msg = message
-                break
-
-        if found_msg:
-            try:
-                channel_entity = await bot.get_entity(TARGET_CHANNEL_ID)
-                username = channel_entity.username
-                if username:
-                    post_link = f"https://t.me/{username}/{found_msg.id}"
-                else:
-                    encoded_id = str(abs(TARGET_CHANNEL_ID)).replace("100", "", 1)
-                    post_link = f"https://t.me/c/{encoded_id}/{found_msg.id}"
-            except Exception:
-                encoded_id = str(abs(TARGET_CHANNEL_ID)).replace("100", "", 1)
-                post_link = f"https://t.me/c/{encoded_id}/{found_msg.id}"
-
+        
+    current_links = load_links_from_firebase()
+    for app_name, download_link in current_links.items():
+        if app_name in message_text:
             reply_text = (
                 f"👋 Hello,\n\n"
-                f"📥 **{clean_query.upper()}** aapke liye Telegram Channel par pehle se hi upload hai!\n\n"
-                f"👉 **Yahan se direct download karein:** {post_link}"
+                f"📥 **{app_name.upper()}** ka naya download link ye raha:\n"
+                f"👉 {download_link}"
             )
             await event.reply(reply_text, link_preview=False)
-        else:
-            await event.reply(f"⏳ **{clean_query.upper()} Coming Soon...**\nBhai ye app abhi channel par upload nahi hai, jald hi aa jayega!")
-
-    except Exception as e:
-        logging.error(f"Live search error: {e}")
+            break
 
 
-# 🔄 8. CORE ENGINE: ADVANCED ROTATION & AUTO-PURGE LOOP
+# 🔄 6. BACKGROUND ENGINE (Rotation Management + 4h 45m Safe Auto-Reboot)
 async def check_and_rotate_posts():
     while True:
+        # ⏰ CRITICAL AUTO-REBOOT LAYER
+        # Agar bot ko chale huye 4 ghante 45 minute ho gaye hain, toh khud restart hoga
         elapsed_time = datetime.now() - START_TIME
         if elapsed_time >= timedelta(hours=4, minutes=45):
-            os.execv(sys.executable, ['python'] + sys.argv)
+            print("🔄 [SAFE REBOOT] 4 Ghante 45 Minute Pure Huye! Server restarting to prevent force-kill...")
+            os.execv(sys.executable, ['python'] + sys.argv) # Current runtime execution matrix reload code
 
         try:
             interval_minutes = get_rotate_time_minutes()
             cloud_posts = load_all_cloud_posts()
             
-            for key_id, post_data in list(cloud_posts.items()):
+            for key_id, post_data in cloud_posts.items():
                 chat_id = post_data["chat_id"]
-                msg_id = int(post_data["message_id"])
+                msg_id = post_data["message_id"]
                 post_time_str = post_data["post_time"]
                 
                 post_time = datetime.fromisoformat(post_time_str)
@@ -274,58 +231,37 @@ async def check_and_rotate_posts():
                 if post_time <= time_threshold:
                     original_msg = None
                     try:
+                        # Exact full message entity pull karna jisse hidden links formatted rahein
                         original_msg = await bot.get_messages(chat_id, ids=msg_id)
                     except Exception:
                         pass
 
                     try:
                         await bot.delete_messages(chat_id, msg_id)
-                        delete_post_from_cloud(msg_id)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.info(f"Post already gone: {e}")
 
-                    if original_msg and original_msg.text:
+                    if original_msg:
                         try:
+                            # Direct message structure injection cloning (Chhupa link exact safe rahega)
                             new_msg = await bot.send_message(chat_id, original_msg)
                             if new_msg:
+                                delete_post_from_cloud(msg_id)
                                 save_post_to_cloud(chat_id, new_msg.id)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logging.error(f"Repost failed: {e}")
                     else:
                         delete_post_from_cloud(msg_id)
-                            
+                        
         except Exception as e:
             logging.error(f"Cloud Rotation Engine error: {e}")
             
-        await asyncio.sleep(45)
+        await asyncio.sleep(15)
 
 
 # 🚀 CLIENT RUNNER
 async def main():
-    global TARGET_CHANNEL_ID
     await bot.start(bot_token=BOT_TOKEN)
-    logging.info("⚡ Bot authenticated successfully!")
-
-    try:
-        res = requests.get(f"{FIREBASE_URL}config/target_channel.json")
-        if res.status_code == 200 and res.json():
-            TARGET_CHANNEL_ID = int(res.json())
-    except Exception:
-        pass
-
-    if not TARGET_CHANNEL_ID:
-        try:
-            async for dialog in bot.iter_dialogs(limit=15):
-                if dialog.is_channel and not dialog.is_group:
-                    TARGET_CHANNEL_ID = dialog.id
-                    requests.put(f"{FIREBASE_URL}config/target_channel.json", json=TARGET_CHANNEL_ID)
-                    break
-        except Exception:
-            pass
-            
-    if TARGET_CHANNEL_ID:
-        bot.loop.create_task(sync_historical_channel_posts(TARGET_CHANNEL_ID))
-        
     bot.loop.create_task(check_and_rotate_posts())
     await bot.run_until_disconnected()
 

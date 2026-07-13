@@ -184,7 +184,7 @@ async def track_channel_posts(event):
         msg_id = event.id
         save_post_to_cloud(chat_id, msg_id)
 
-# 5. 👥 GROUP AUTOMATIC REPLY
+# 5. 👥 GROUP AUTOMATIC REPLY (BOT HISTORY BAN BYPASS TRICK)
 @bot.on(events.NewMessage(incoming=True))
 async def handle_group_replies(event):
     if not event.is_group:
@@ -194,7 +194,7 @@ async def handle_group_replies(event):
     if not message_text or message_text.startswith('/'):
         return
         
-    # 🛠️ Yahan ID ki jagah ab aapka Channel Username laga diya hai
+    # Aapka channel username
     TARGET_CHANNEL = 'PRMMOD'
     
     stop_words = {"do", "de", "link", "app", "please", "plz", "bhai", "hai", "kya", "chahiye"}
@@ -210,19 +210,44 @@ async def handle_group_replies(event):
     display_name = app_name.upper()
     
     try:
-        # Username use karne se bot bina cache ke bhi history padh lega
-        async for msg in event.client.iter_messages(TARGET_CHANNEL, limit=500):
-            if msg.text and app_name in msg.text.lower():
-                found_msg = msg
+        # --- 🚀 HACKER TRICK: Bypassing Telegram Bot History Ban ---
+        # Step 1: Pata lagana ki channel me kitni posts hain (1 call me)
+        test_ids = [20000, 15000, 10000, 8000, 5000, 3000, 1000, 500, 200]
+        max_id = 500
+        
+        try:
+            milestones = await event.client.get_messages(TARGET_CHANNEL, ids=test_ids)
+            for i, m in enumerate(milestones):
+                if m is not None:
+                    max_id = test_ids[i] + 500 # Channel ki current max ID mil gayi
+                    break
+        except Exception:
+            pass
+            
+        # Step 2: Ab Max ID se le kar reverse me Message ID check karenge (No History Ban)
+        search_ids = list(range(max_id, 0, -1))
+        chunk_size = 200
+        
+        for i in range(0, len(search_ids), chunk_size):
+            chunk = search_ids[i:i + chunk_size]
+            
+            # Fetch specific IDs (Bots ko ye karne ki full permission hai)
+            msgs = await event.client.get_messages(TARGET_CHANNEL, ids=chunk)
+            
+            for msg in msgs:
+                if msg and msg.text and app_name in msg.text.lower():
+                    found_msg = msg
+                    break
+                    
+            if found_msg:
                 break
                     
     except Exception as e:
-        await event.reply(f"⚠️ **SYSTEM DEBUG (Search Error):**\n`{str(e)}`")
+        await event.reply(f"⚠️ **SYSTEM DEBUG (Bypass Error):**\n`{str(e)}`")
         return
             
     if found_msg:
         try:
-            # Seedha username se link bana diya
             post_link = f"https://t.me/{TARGET_CHANNEL}/{found_msg.id}"
                 
             reply_text = (

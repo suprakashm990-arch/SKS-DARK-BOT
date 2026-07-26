@@ -133,8 +133,7 @@ async def broadcast_message(event):
 
     await msg.edit(f"✅ **Broadcast Complete!**\n🚀 Sent: **{success} chats**\n❌ Failed: **{failed} chats**")
 
-
-# 4. 👥 PUBLIC GROUP AUTOMATIC REPLY (Smart Engine)
+# 4. 👥 PUBLIC GROUP AUTOMATIC REPLY (Smart Engine & Bug Fix)
 linked_channels_cache = {}
 
 @bot.on(events.NewMessage(incoming=True))
@@ -144,12 +143,12 @@ async def handle_group_replies(event):
     text = event.raw_text.lower() if event.raw_text else ""
     if not text or text.startswith('/'): return
     
-    # Check if chat is Blocked by Owner
+    # 1. Check if chat is Blocked by Owner
     blocked_chats = load_blocked_chats()
     if str(event.chat_id) in blocked_chats:
-        return # Blocked group me chup rahega
+        return 
 
-    # Intent Detection
+    # 2. Intent Detection (Trigger words)
     intent_keywords = {"do", "de", "link", "app", "apk", "mod", "chahiye", "dedo", "bhejo", "tv", "movie", "series", "ott", "premium"}
     message_words = text.split()
     if not any(word in intent_keywords for word in message_words):
@@ -162,26 +161,28 @@ async def handle_group_replies(event):
     if not app_name or len(app_name) < 2: return
     display_name = app_name.upper()
 
-    # Find Linked Channel Automatically
+    # 3. Find Linked Channel Automatically (Cache Bug Fixed)
     chat_id = event.chat_id
-    if chat_id not in linked_channels_cache:
+    channel_id = linked_channels_cache.get(chat_id)
+
+    if not channel_id:
         try:
             full_chat = await event.client(GetFullChannelRequest(chat_id))
             if full_chat.full_chat.linked_chat_id:
                 raw_id = str(full_chat.full_chat.linked_chat_id)
-                linked_channels_cache[chat_id] = int(f"-100{raw_id}") if not raw_id.startswith("-100") else int(raw_id)
-            else:
-                linked_channels_cache[chat_id] = None 
-        except:
-            linked_channels_cache[chat_id] = None
+                channel_id = int(f"-100{raw_id}") if not raw_id.startswith("-100") else int(raw_id)
+                linked_channels_cache[chat_id] = channel_id # Save to cache only if success
+        except Exception as e:
+            pass
             
-    channel_id = linked_channels_cache.get(chat_id)
-    if not channel_id: return 
+    if not channel_id: 
+        # Agar group channel se linked nahi hai toh bot chup rahega
+        return 
 
-    # Search in Channel
+    # 4. Search in Channel (Limit badhakar 500 kar di)
     found_msg = None
     try:
-        async for msg in event.client.iter_messages(channel_id, limit=200):
+        async for msg in event.client.iter_messages(channel_id, limit=500):
             if msg.text and app_name in msg.text.lower():
                 found_msg = msg
                 break
@@ -192,7 +193,11 @@ async def handle_group_replies(event):
         post_link = f"https://t.me/c/{c_id_str}/{found_msg.id}"
         reply_text = f"👋 Hello,\n\n📥 **{display_name}** channel par available hai.\n\n👉 {post_link}"
         await event.reply(reply_text, link_preview=False)
-    # Agar nahi mila toh CHUP RAHEGA (No coming soon)
+    else:
+        # OWNER KE LIYE DEBUG: Agar post nahi milti hai toh sirf aapko batayega (Public ko nahi)
+        if event.sender_id == OWNER_ID:
+            await event.reply(f"⚠️ **Owner Debug:**\nMaine channel me '{app_name}' dhundha, par pichli 500 posts me nahi mila.")
+
 
 
 # 5. 🗑️ EXPIRE DATE SCANNER & GITHUB AUTO-RESTART

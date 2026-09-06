@@ -5,11 +5,11 @@ import time
 import logging
 import asyncio
 import unicodedata
+from difflib import SequenceMatcher
+from urllib.parse import quote
 from datetime import datetime, timedelta
 
 import requests
-from rapidfuzz import fuzz
-
 from telethon import TelegramClient, events, Button
 from telethon.errors import (
     UsernameInvalidError,
@@ -20,33 +20,36 @@ from telethon.errors import (
 )
 
 # ============================================================
-# 🚀 PREMIUM MOD PUBLIC MULTI-USER BOT
+# PREMIUM MOD PUBLIC SEARCH BOT
+# Dependencies: Telethon + requests only
 # ============================================================
 
-print("🚀 PREMIUM MOD BOT BOOTING...")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-# ============================================================
-# 🔐 ENVIRONMENT
-# ============================================================
+print("🚀 PREMIUM MOD BOT BOOTING...")
 
 API_ID = os.environ.get("TG_API_ID")
 API_HASH = os.environ.get("TG_API_HASH")
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 
 FIREBASE_URL = "https://sks-9865a-default-rtdb.firebaseio.com/"
-
-# Your owner ID - owner commands always available
 OWNER_ID = 8587571289
+
+# Recent-post scan. Increase only if your channel is very large.
+SCAN_LIMIT = 2500
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
     print("❌ TG_API_ID / TG_API_HASH / TG_BOT_TOKEN missing")
     sys.exit(1)
 
-API_ID = int(API_ID)
+try:
+    API_ID = int(API_ID)
+except ValueError:
+    print("❌ TG_API_ID must be a number")
+    sys.exit(1)
 
 bot = TelegramClient(
     "premium_mod_public_bot",
@@ -55,35 +58,24 @@ bot = TelegramClient(
 )
 
 START_TIME = datetime.now()
-
-# ============================================================
-# 🧠 SEARCH SETTINGS
-# ============================================================
-
-MIN_SCORE = 58
-GOOD_SCORE = 68
-
-# Maximum posts to inspect locally
-LOCAL_SCAN_LIMIT = 2500
-
-# Search cache
+SETUP = {}
 CHANNEL_CACHE = {}
+SEARCH_LOCKS = {}
+
 
 # ============================================================
-# 🔥 FIREBASE HELPERS
+# FIREBASE
 # ============================================================
 
 def firebase_get(path):
     try:
         url = FIREBASE_URL.rstrip("/") + "/" + path.lstrip("/")
         r = requests.get(url, timeout=12)
-
         if r.status_code == 200:
             return r.json()
-
+        logging.error("Firebase GET %s -> HTTP %s", path, r.status_code)
     except Exception as e:
         logging.error("Firebase GET error: %s", e)
-
     return None
 
 
@@ -91,12 +83,11 @@ def firebase_put(path, data):
     try:
         url = FIREBASE_URL.rstrip("/") + "/" + path.lstrip("/")
         r = requests.put(url, json=data, timeout=12)
-
-        return r.status_code in (200, 201)
-
+        if r.status_code in (200, 201):
+            return True
+        logging.error("Firebase PUT %s -> HTTP %s", path, r.status_code)
     except Exception as e:
         logging.error("Firebase PUT error: %s", e)
-
     return False
 
 
@@ -104,94 +95,68 @@ def firebase_delete(path):
     try:
         url = FIREBASE_URL.rstrip("/") + "/" + path.lstrip("/")
         r = requests.delete(url, timeout=12)
-
         return r.status_code in (200, 204)
-
     except Exception as e:
         logging.error("Firebase DELETE error: %s", e)
-
     return False
 
 
 # ============================================================
-# 🔐 SAFE FIREBASE KEY
+# GROUP -> CHANNEL MAPPING
+# Stored by GROUP ID, not by requesting user.
+# This fixes the old public-mode mapping problem.
+# ============================================================
+
+def mapping_path(group_id):
+    return f"groups/{int(group_id)}"
+
+
+def get_mapping(group_id):
+    data = firebase_get(mapping_path(group_id))
+    return data if isinstance(data, dict) else {}
+
+
+def save_mapping(group_id, channel):
+    data = {
+        "group_id": int(group_id),
+        "channel_id": int(channel.id),
+        "channel_title": getattr(channel, "title", "Unknown"),
+        "channel_username": getattr(channel, "username", None),
+        "updated_at": int(time.time()),
+        "owner_id": OWNER_ID,
+    }
+    return firebase_put(mapping_path(group_id), data)
+
+
+# ============================================================
+# OPTIONAL MANUAL FILTER LINKS
 # ============================================================
 
 def safe_key(value):
-    value = str(value)
-
-    value = value.replace(".", "_")
-    value = value.replace("#", "_")
-    value = value.replace("$", "_")
-    value = value.replace("[", "_")
-    value = value.replace("]", "_")
-    value = value.replace("/", "_")
-
+    value = str(value).strip().lower()
+    for c in ".#$[]/":
+        value = value.replace(c, "_")
     return value[:100]
 
 
-# ============================================================
-# 👤 USER CONFIG
-#
-# Each user gets own:
-# /users/<USER_ID>/group
-# /users/<USER_ID>/channel
-# ============================================================
-
-def get_user_config(user_id):
-    data = firebase_get(f"users/{user_id}")
-
-    if isinstance(data, dict):
-        return data
-
-    return {}
-
-
-def save_user_config(user_id, config):
-    return firebase_put(f"users/{user_id}", config)
+def get_filter_links():
+    data = firebase_get("links")
+    return data if isinstance(data, dict) else {}
 
 
 # ============================================================
-# 🔧 NORMALIZATION
+# TEXT NORMALIZATION / FUZZY MATCH
+# No rapidfuzz dependency required.
 # ============================================================
 
 REQUEST_WORDS = {
-    "do",
-    "de",
-    "dedo",
-    "bhejo",
-    "bhej",
-    "send",
-    "link",
-    "download",
-    "downloadlink",
-    "apk",
-    "app",
-    "mod",
-    "please",
-    "plz",
-    "pls",
-    "bhai",
-    "bro",
-    "mujhe",
-    "mera",
-    "meri",
-    "chahiye",
-    "chaiye",
-    "hai",
-    "kya",
-    "ka",
-    "ki",
-    "ke",
-    "ko",
-    "me",
-    "mein",
-    "par",
-    "wala",
-    "wali",
-    "version",
-    "latest",
-    "latestversion",
+    "do", "de", "dedo", "bhejo", "bhej", "send",
+    "link", "links", "download", "downloadlink",
+    "please", "plz", "pls", "bhai", "bro",
+    "mujhe", "mera", "meri", "chahiye", "chaiye",
+    "hai", "kya", "ka", "ki", "ke", "ko",
+    "me", "mein", "par", "pe", "se", "wala", "wali",
+    "version", "latest", "new", "mod", "apk", "app",
 }
 
 
@@ -199,134 +164,136 @@ def normalize(text):
     if not text:
         return ""
 
-    text = unicodedata.normalize("NFKC", text)
+    text = unicodedata.normalize("NFKC", str(text)).lower()
 
-    text = text.lower()
+    # URLs / punctuation / separators are not useful for app-name matching.
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[_\-/.,:;|+*=~`'\"()\[\]{}<>!?]+", " ", text)
 
-    # Common separators -> spaces
-    text = re.sub(r"[_\-./]+", " ", text)
-
-    # Remove emoji / symbols but keep letters/numbers
     text = "".join(
         c if c.isalnum() or c.isspace() else " "
         for c in text
     )
 
-    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", text).strip()
 
-    return text
+
+def compact(text):
+    return normalize(text).replace(" ", "")
 
 
 def extract_app_query(text):
+    words = normalize(text).split()
+    cleaned = [w for w in words if w not in REQUEST_WORDS]
+    return " ".join(cleaned).strip()
+
+
+def similarity(a, b):
+    a_n = normalize(a)
+    b_n = normalize(b)
+
+    if not a_n or not b_n:
+        return 0
+
+    if a_n in b_n:
+        return 100
+
+    a_c = compact(a_n)
+    b_c = compact(b_n)
+
+    if a_c and a_c in b_c:
+        return 98
+
+    direct = SequenceMatcher(None, a_n, b_n).ratio() * 100
+    compact_score = SequenceMatcher(None, a_c, b_c).ratio() * 100
+
+    # Compare individual words too.
+    q_words = a_n.split()
+    p_words = b_n.split()
+
+    word_best = 0
+    for qw in q_words:
+        if len(qw) < 2:
+            continue
+        for pw in p_words:
+            s = SequenceMatcher(None, qw, pw).ratio() * 100
+            if s > word_best:
+                word_best = s
+
+    return max(direct, compact_score, word_best)
+
+
+def post_score(query, text):
     """
-    User kuch bhi likh sakta hai:
-
-    Kuku TV do
-    Kuku TV link
-    kuku tv please
-    BulletShorts dedo
-    Bullet Shorts chahiye
-    mujhe kuku tv ka mod bhejo
+    Give highest priority to the app name appearing in the post.
+    This avoids matching a random word in a long caption.
     """
-
-    normalized = normalize(text)
-
-    words = normalized.split()
-
-    cleaned = [
-        w for w in words
-        if w not in REQUEST_WORDS
-    ]
-
-    query = " ".join(cleaned).strip()
-
-    return query
-
-
-# ============================================================
-# 🔍 FUZZY SEARCH SCORING
-# ============================================================
-
-def calculate_score(query, post_text):
     q = normalize(query)
-    t = normalize(post_text)
+    t = normalize(text)
 
     if not q or not t:
         return 0
 
-    # Exact
     if q in t:
         return 100
 
-    # Full text similarity
-    ratio = fuzz.partial_ratio(q, t)
+    q_compact = compact(q)
+    t_compact = compact(t)
 
-    token_score = fuzz.token_set_ratio(q, t)
+    if q_compact and q_compact in t_compact:
+        return 98
 
-    sort_score = fuzz.token_sort_ratio(q, t)
+    # Check every short window around post words.
+    q_words = q.split()
+    t_words = t.split()
 
-    score = max(
-        ratio,
-        token_score,
-        sort_score
-    )
+    best = similarity(q, t)
 
-    return score
+    if len(q_words) > 1:
+        n = len(q_words)
+        for i in range(max(1, len(t_words) - 20)):
+            window = " ".join(t_words[i:i+n])
+            if window:
+                best = max(best, similarity(q, window))
+
+    return best
 
 
 # ============================================================
-# 🔗 TELEGRAM LINK RESOLVER
+# TELEGRAM ENTITY RESOLUTION
 # ============================================================
 
-def extract_username_from_link(value):
-    if not value:
-        return None
+def extract_username(value):
+    value = (value or "").strip()
 
-    value = value.strip()
-
-    # @username
     if value.startswith("@"):
         return value[1:]
 
-    # https://t.me/username
-    m = re.search(
-        r"(?:https?://)?t\.me/([A-Za-z0-9_]+)",
+    m = re.match(
+        r"^(?:https?://)?(?:www\.)?t\.me/([A-Za-z0-9_]+)(?:/.*)?$",
         value
     )
 
     if m:
         username = m.group(1)
-
-        # Ignore special invite links
         if username not in ("c", "joinchat"):
             return username
 
     return None
 
 
-async def resolve_telegram_entity(value):
-    """
-    Public username/channel:
-        @PRMMOD
-        https://t.me/PRMMOD
-
-    Private channel/group:
-        Bot must already be a member/admin.
-    """
-
-    value = value.strip()
-
-    username = extract_username_from_link(value)
+async def resolve_entity(value):
+    value = (value or "").strip()
+    username = extract_username(value)
 
     try:
-
         if username:
-            entity = await bot.get_entity(username)
-        else:
-            # Numeric Telegram ID
-            entity = await bot.get_entity(int(value))
+            return await bot.get_entity(username)
 
-        return entity
+        if re.fullmatch(r"-?\d+", value):
+            return await bot.get_entity(int(value))
+
+        return await bot.get_entity(value)
 
     except (
         UsernameInvalidError,
@@ -334,305 +301,156 @@ async def resolve_telegram_entity(value):
         ChannelPrivateError,
     ):
         return None
-
     except Exception as e:
-        logging.error(
-            "Entity resolve error [%s]: %s",
-            value,
-            e
-        )
-
+        logging.error("Resolve entity %r: %s", value, e)
         return None
 
 
-# ============================================================
-# 🧪 CHANNEL ACCESS TEST
-# ============================================================
-
-async def test_channel(channel):
+async def validate_channel(channel):
     try:
-        # Read a few posts
-        messages = await bot.get_messages(
-            channel,
-            limit=5
-        )
-
-        return True, messages
-
+        msgs = await bot.get_messages(channel, limit=3)
+        return True, msgs
     except ChatAdminRequiredError:
-        return False, "Bot ko channel access/admin permission chahiye."
-
+        return False, "Bot ko channel read/admin permission nahi hai."
     except ChannelPrivateError:
-        return False, "Channel private hai ya bot channel ka member nahi hai."
-
+        return False, "Channel private hai ya bot member nahi hai."
     except FloodWaitError as e:
-        return False, f"Telegram FloodWait: {e.seconds} seconds."
-
+        return False, f"Telegram FloodWait: {e.seconds}s."
     except Exception as e:
         return False, str(e)
 
 
 # ============================================================
-# 🔎 SMART CHANNEL SEARCH
+# CHANNEL SEARCH
+# Telegram server search + recent-history fallback.
 # ============================================================
 
 async def search_channel(channel, query):
-    """
-    1. Telegram server-side search try
-    2. Recent messages scan
-    3. Fuzzy matching
-    4. Best matching post return
-    """
-
     if not query:
-        return None
+        return None, 0
 
-    best_message = None
+    best = None
     best_score = 0
+    seen = set()
 
-    # --------------------------------------------------------
-    # STEP 1: Telegram's own search
-    # --------------------------------------------------------
+    # First ask Telegram's own channel search.
+    terms = [normalize(query)]
+    for word in normalize(query).split():
+        if len(word) >= 3:
+            terms.append(word)
 
-    search_terms = []
-
-    q = normalize(query)
-
-    if q:
-        search_terms.append(q)
-
-        # Multi-word app:
-        # Kuku TV -> Kuku
-        # Bullet Shorts -> Bullet
-        parts = q.split()
-
-        for part in parts:
-            if len(part) >= 3:
-                search_terms.append(part)
-
-    seen_ids = set()
-
-    for term in search_terms[:5]:
-
+    for term in terms[:5]:
         try:
-
             async for msg in bot.iter_messages(
                 channel,
                 search=term,
-                limit=80
+                limit=100
             ):
-
-                if not msg:
+                if not msg or msg.id in seen:
                     continue
-
-                if msg.id in seen_ids:
-                    continue
-
-                seen_ids.add(msg.id)
+                seen.add(msg.id)
 
                 text = msg.raw_text or ""
-
                 if not text:
                     continue
 
-                score = calculate_score(
-                    query,
-                    text
-                )
+                score = post_score(query, text)
 
                 if score > best_score:
                     best_score = score
-                    best_message = msg
+                    best = msg
 
-                if score >= 95:
-                    return msg
+                if score >= 98:
+                    return best, best_score
 
         except FloodWaitError as e:
-            logging.warning(
-                "Telegram FloodWait: %s seconds",
-                e.seconds
-            )
+            logging.warning("Search FloodWait: %ss", e.seconds)
             await asyncio.sleep(e.seconds)
-
         except Exception as e:
-            logging.warning(
-                "Server search failed: %s",
-                e
-            )
+            logging.warning("Telegram search failed: %s", e)
 
-    # --------------------------------------------------------
-    # STEP 2: Recent posts fuzzy scan
-    # --------------------------------------------------------
-
+    # Fallback: inspect recent channel posts directly.
     try:
-
         scanned = 0
 
         async for msg in bot.iter_messages(
             channel,
-            limit=LOCAL_SCAN_LIMIT
+            limit=SCAN_LIMIT
         ):
-
             if not msg:
                 continue
 
             text = msg.raw_text or ""
-
             if not text:
                 continue
 
             scanned += 1
-
-            score = calculate_score(
-                query,
-                text
-            )
+            score = post_score(query, text)
 
             if score > best_score:
                 best_score = score
-                best_message = msg
+                best = msg
 
-            # Very strong match
-            if score >= 92:
-                return msg
+            if score >= 98:
+                return best, best_score
 
-            if scanned >= LOCAL_SCAN_LIMIT:
+            if scanned >= SCAN_LIMIT:
                 break
 
     except FloodWaitError as e:
-        logging.warning(
-            "Fuzzy search FloodWait: %s seconds",
-            e.seconds
-        )
-
+        logging.warning("History scan FloodWait: %ss", e.seconds)
     except Exception as e:
-        logging.error(
-            "Fuzzy scan error: %s",
-            e
-        )
+        logging.error("History scan error: %s", e)
 
-    if best_message and best_score >= MIN_SCORE:
-        logging.info(
-            "Search result: %s | score=%s",
-            query,
-            best_score
-        )
+    # 60 is enough for small spelling differences without
+    # making random posts match too easily.
+    if best and best_score >= 60:
+        return best, best_score
 
-        return best_message
-
-    return None
+    return None, best_score
 
 
 # ============================================================
-# 🔗 POST LINK
+# POST LINK / SHARE LINK
 # ============================================================
 
-def make_post_link(channel, message):
-    """
-    Public channel:
-        https://t.me/username/message_id
-
-    Private channel:
-        https://t.me/c/channel_id/message_id
-    """
-
+def post_link(channel, message):
     username = getattr(channel, "username", None)
 
     if username:
         return f"https://t.me/{username}/{message.id}"
 
-    channel_id = getattr(channel, "id", None)
-
-    if channel_id:
-        return (
-            f"https://t.me/c/"
-            f"{channel_id}/"
-            f"{message.id}"
-        )
+    cid = getattr(channel, "id", None)
+    if cid:
+        return f"https://t.me/c/{cid}/{message.id}"
 
     return None
 
 
+def share_link(url, text):
+    return (
+        "https://t.me/share/url"
+        "?url=" + quote(url, safe="")
+        "&text=" + quote(text, safe="")
+    )
+
+
 # ============================================================
-# 🧪 DIAGNOSTIC
+# ADMIN CHECK
 # ============================================================
 
-async def diagnostic(user_id, chat_id=None):
+async def is_group_admin(event):
+    if not event.is_group:
+        return False
 
-    config = get_user_config(user_id)
-
-    result = [
-        "⚠️ **BOT DIAGNOSTIC**",
-        "",
-        f"👤 User ID: `{user_id}`",
-    ]
-
-    group_id = config.get("group_id")
-    channel_id = config.get("channel_id")
-
-    # GROUP
-    if group_id:
-        result.append("👥 Group Mapping: ✅")
-
-        try:
-            group = await bot.get_entity(int(group_id))
-
-            result.append(
-                f"💬 Group: `{getattr(group, 'title', 'Unknown')}`"
-            )
-
-        except Exception as e:
-            result.append("💬 Group Resolve: ❌")
-            result.append(
-                f"Reason: `{str(e)[:200]}`"
-            )
-
-    else:
-        result.append("👥 Group Mapping: ❌")
-        result.append("Run `/setup`")
-
-    # CHANNEL
-    channel = None
-
-    if channel_id:
-        try:
-            channel = await bot.get_entity(
-                int(channel_id)
-            )
-
-            result.append("📢 Channel Mapping: ✅")
-
-            result.append(
-                f"📢 Channel: `{getattr(channel, 'title', 'Unknown')}`"
-            )
-
-        except Exception as e:
-            result.append("📢 Channel Mapping: ❌")
-            result.append(
-                f"Reason: `{str(e)[:200]}`"
-            )
-
-    else:
-        result.append("📢 Channel Mapping: ❌")
-        result.append("Run `/setup`")
-
-    # SEARCH TEST
-    if channel:
-
-        ok, data = await test_channel(channel)
-
-        if ok:
-            result.append("🔎 Channel Read Access: ✅")
-            result.append("🧠 Search Engine: ✅")
-            result.append("🔥 Firebase: ✅")
-
-        else:
-            result.append("🔎 Channel Read Access: ❌")
-            result.append(
-                f"Reason: `{str(data)[:250]}`"
-            )
-
-    return "\n".join(result)
+    try:
+        p = await bot.get_permissions(
+            event.chat_id,
+            event.sender_id
+        )
+        return bool(p.is_admin)
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -641,244 +459,160 @@ async def diagnostic(user_id, chat_id=None):
 
 @bot.on(events.NewMessage(pattern=r"^/start$"))
 async def start_handler(event):
-
-    if event.is_group:
-
-        await event.reply(
-            "👋 **Premium Mod Search Bot**\n\n"
-            "Mujhe group mein add karke admin/read permission dein.\n\n"
-            "Owner/Admin setup ke liye:\n"
-            "`/setup`"
-        )
-
-        return
-
     await event.reply(
-        "👋 **PREMIUM MOD BOT**\n\n"
-        "🔎 Smart App Search\n"
-        "🧠 Fuzzy Search\n"
-        "📢 Channel Post Search\n"
-        "🔗 Share Button\n"
-        "🔥 Firebase\n\n"
-        "Group/channel setup karne ke liye:\n"
-        "`/setup`"
+        "👋 **PREMIUM MOD SEARCH BOT**\n\n"
+        "🔎 Smart Channel Search\n"
+        "🧠 Fuzzy App Matching\n"
+        "🔥 Firebase Group Mapping\n"
+        "🔗 Open + Share Post\n\n"
+        "Group admin setup:\n"
+        "`/setup`\n\n"
+        "Check bot:\n"
+        "`/ping`"
     )
 
 
 # ============================================================
 # /SETUP
-#
-# Setup is interactive:
-#
-# /setup
-# Bot asks channel
-# Then group
-#
-# BEST: Run /setup inside target group.
+# Run inside the target group.
 # ============================================================
-
-setup_sessions = {}
-
 
 @bot.on(events.NewMessage(pattern=r"^/setup$"))
 async def setup_start(event):
-
-    user_id = event.sender_id
-
-    # Security:
-    # Public bot hone ke baad bhi setup sirf group
-    # ke admin ko karne denge.
-    if event.is_group:
-
-        try:
-            permissions = await event.client.get_permissions(
-                event.chat_id,
-                user_id
-            )
-
-            if not permissions.is_admin:
-                await event.reply(
-                    "❌ Sirf group admin `/setup` kar sakta hai."
-                )
-                return
-
-        except Exception:
-            await event.reply(
-                "❌ Group admin permission verify nahi ho saki."
-            )
-            return
-
-        setup_sessions[user_id] = {
-            "step": "channel",
-            "group_id": event.chat_id
-        }
-
+    if not event.is_group:
         await event.reply(
-            "⚙️ **SETUP STARTED**\n\n"
-            "📢 Ab **channel ka @username ya link** bhejo.\n\n"
-            "Example:\n"
-            "`@PRMMOD`\n"
-            "`https://t.me/PRMMOD`\n\n"
-            "⚠️ Bot ko us channel mein pehle add/admin karo."
+            "⚠️ `/setup` target group ke andar run karo."
         )
-
         return
 
+    if not await is_group_admin(event):
+        await event.reply(
+            "❌ Sirf group admin `/setup` kar sakta hai."
+        )
+        return
+
+    SETUP[event.sender_id] = {
+        "group_id": int(event.chat_id),
+        "step": "channel"
+    }
+
     await event.reply(
-        "⚠️ `/setup` target group ke andar run karo.\n\n"
-        "Isse bot automatically us group ko mapping mein save karega."
+        "⚙️ **SETUP STARTED**\n\n"
+        "📢 Ab jis channel se search karna hai uska:\n"
+        "• `@username` ya\n"
+        "• `https://t.me/username`\n"
+        "bhejo.\n\n"
+        "⚠️ Bot ko target channel mein add/admin karna zaroori hai."
     )
 
 
 @bot.on(events.NewMessage(incoming=True))
-async def setup_message_handler(event):
-
+async def setup_input(event):
     user_id = event.sender_id
+    session = SETUP.get(user_id)
 
-    if user_id not in setup_sessions:
+    if not session:
         return
 
-    # Commands ignored
-    if event.raw_text.startswith("/"):
+    text = (event.raw_text or "").strip()
+
+    if not text or text.startswith("/"):
         return
 
-    session = setup_sessions[user_id]
+    if session.get("step") != "channel":
+        return
 
-    # --------------------------------------------------------
-    # CHANNEL STEP
-    # --------------------------------------------------------
+    if not await is_group_admin(event):
+        return
 
-    if session.get("step") == "channel":
+    channel = await resolve_entity(text)
 
-        channel_input = event.raw_text.strip()
-
-        channel = await resolve_telegram_entity(
-            channel_input
-        )
-
-        if not channel:
-
-            await event.reply(
-                "❌ **Channel identify nahi hua.**\n\n"
-                "Check karo:\n"
-                "• Bot channel mein added hai\n"
-                "• Bot ko channel access/admin diya hai\n"
-                "• Link/username correct hai\n\n"
-                "Dobara channel link bhejo."
-            )
-
-            return
-
-        ok, data = await test_channel(channel)
-
-        if not ok:
-
-            await event.reply(
-                "❌ **Channel access problem**\n\n"
-                f"`{str(data)[:500]}`\n\n"
-                "Bot ko channel mein add/admin karke "
-                "channel link dobara bhejo."
-            )
-
-            return
-
-        session["channel_id"] = channel.id
-        session["channel_title"] = getattr(
-            channel,
-            "title",
-            "Unknown"
-        )
-
-        session["step"] = "confirm"
-
+    if not channel:
         await event.reply(
-            "📢 **CHANNEL FOUND ✅**\n\n"
-            f"Name: **{session['channel_title']}**\n"
-            f"ID: `{channel.id}`\n\n"
-            "👥 Group mapping already selected hai:\n"
-            f"`{session['group_id']}`\n\n"
-            "Save karne ke liye `/save` bhejo.\n"
-            "Cancel ke liye `/cancel`."
+            "❌ **Channel identify nahi hua.**\n\n"
+            "Public channel ka exact @username/link bhejo.\n"
+            "Agar private channel hai to bot ko pehle channel mein add karo."
         )
-
         return
 
+    ok, info = await validate_channel(channel)
 
-# ============================================================
-# /SAVE
-# ============================================================
+    if not ok:
+        await event.reply(
+            "❌ **Channel access problem**\n\n"
+            f"{info}"
+        )
+        return
+
+    session["channel_id"] = int(channel.id)
+    session["channel_title"] = getattr(
+        channel, "title", "Unknown"
+    )
+    session["step"] = "confirm"
+
+    await event.reply(
+        "📢 **CHANNEL FOUND ✅**\n\n"
+        f"Name: **{session['channel_title']}**\n"
+        f"ID: `{session['channel_id']}`\n\n"
+        f"👥 Group ID: `{session['group_id']}`\n\n"
+        "Save karne ke liye `/save` bhejo.\n"
+        "Cancel ke liye `/cancel`."
+    )
+
 
 @bot.on(events.NewMessage(pattern=r"^/save$"))
 async def setup_save(event):
-
     user_id = event.sender_id
-
-    session = setup_sessions.get(user_id)
+    session = SETUP.get(user_id)
 
     if not session:
         await event.reply(
-            "❌ Koi active setup nahi hai.\n"
-            "Target group mein `/setup` run karo."
+            "❌ Active setup nahi hai. Group mein `/setup` run karo."
         )
+        return
+
+    if not await is_group_admin(event):
         return
 
     if session.get("step") != "confirm":
+        await event.reply("❌ Setup incomplete hai.")
+        return
+
+    channel = await resolve_entity(
+        str(session["channel_id"])
+    )
+
+    if not channel:
         await event.reply(
-            "❌ Setup incomplete hai."
+            "❌ Channel dobara resolve nahi hua. `/setup` phir se karo."
         )
         return
 
-    config = {
-        "group_id": session["group_id"],
-        "channel_id": session["channel_id"],
-        "channel_title": session.get(
-            "channel_title",
-            "Unknown"
-        ),
-        "updated_at": int(time.time())
-    }
-
-    if save_user_config(user_id, config):
-
-        setup_sessions.pop(user_id, None)
+    if save_mapping(session["group_id"], channel):
+        SETUP.pop(user_id, None)
 
         await event.reply(
-            "✅ **SETUP COMPLETE!**\n\n"
-            f"👥 Group: `{config['group_id']}`\n"
-            f"📢 Channel: **{config['channel_title']}**\n"
-            f"🆔 Channel ID: `{config['channel_id']}`\n\n"
-            "🔎 Smart Search: ✅\n"
-            "🧠 Fuzzy Search: ✅\n"
-            "🔗 Share Button: ✅\n"
-            "🔥 Firebase: ✅\n\n"
-            "Ab user group mein likhe:\n"
+            "✅ **SETUP COMPLETE**\n\n"
+            f"👥 Group: `{session['group_id']}`\n"
+            f"📢 Channel: **{session['channel_title']}**\n"
+            f"🆔 `{session['channel_id']}`\n\n"
+            "🔎 Search: ✅\n"
+            "🧠 Fuzzy Match: ✅\n"
+            "🔥 Firebase: ✅\n"
+            "🔗 Share Button: ✅\n\n"
+            "Ab user likh sakta hai:\n"
             "`Kuku TV do`\n"
-            "`BulletShorts link`\n"
-            "`kuku tv please`\n"
+            "`KukuTvv link`\n"
             "`Bullet Shorts dedo`"
         )
-
     else:
+        await event.reply("❌ Firebase mein mapping save nahi hui.")
 
-        await event.reply(
-            "❌ Firebase mein setup save nahi ho saka."
-        )
-
-
-# ============================================================
-# /CANCEL
-# ============================================================
 
 @bot.on(events.NewMessage(pattern=r"^/cancel$"))
-async def cancel_setup(event):
-
-    user_id = event.sender_id
-
-    setup_sessions.pop(user_id, None)
-
-    await event.reply(
-        "❌ Setup cancelled."
-    )
+async def setup_cancel(event):
+    SETUP.pop(event.sender_id, None)
+    await event.reply("❌ Setup cancelled.")
 
 
 # ============================================================
@@ -887,30 +621,61 @@ async def cancel_setup(event):
 
 @bot.on(events.NewMessage(pattern=r"^/(diagnostic|diag)$"))
 async def diagnostic_handler(event):
+    if event.is_group and not await is_group_admin(event):
+        return
 
-    user_id = event.sender_id
+    group_id = event.chat_id if event.is_group else None
 
-    # Diagnostic sirf setup owner/admin ko
-    if event.is_group:
+    if not group_id:
+        await event.reply(
+            "⚠️ `/diagnostic` target group mein run karo."
+        )
+        return
 
-        try:
-            permissions = await event.client.get_permissions(
-                event.chat_id,
-                user_id
-            )
+    mapping = get_mapping(group_id)
 
-            if not permissions.is_admin:
-                return
+    lines = [
+        "🧪 **BOT DIAGNOSTIC**",
+        "",
+        f"👥 Group ID: `{group_id}`",
+    ]
 
-        except Exception:
-            return
+    if not mapping:
+        lines.append("🔥 Firebase Mapping: ❌")
+        lines.append("➡️ Group mein `/setup` run karo.")
+        await event.reply("\n".join(lines))
+        return
 
-    result = await diagnostic(
-        user_id,
-        event.chat_id
-    )
+    lines.append("🔥 Firebase Mapping: ✅")
 
-    await event.reply(result)
+    channel_id = mapping.get("channel_id")
+
+    if not channel_id:
+        lines.append("📢 Channel ID: ❌")
+        await event.reply("\n".join(lines))
+        return
+
+    try:
+        channel = await bot.get_entity(int(channel_id))
+        lines.append(
+            f"📢 Channel: **{getattr(channel, 'title', 'Unknown')}**"
+        )
+        lines.append("📢 Channel Resolve: ✅")
+
+        ok, info = await validate_channel(channel)
+
+        if ok:
+            lines.append("📖 Channel Read Access: ✅")
+            lines.append("🔎 Search Engine: ✅")
+        else:
+            lines.append("📖 Channel Read Access: ❌")
+            lines.append(f"Reason: `{str(info)[:300]}`")
+
+    except Exception as e:
+        lines.append("📢 Channel Resolve: ❌")
+        lines.append(f"Reason: `{str(e)[:300]}`")
+
+    await event.reply("\n".join(lines))
 
 
 # ============================================================
@@ -919,375 +684,225 @@ async def diagnostic_handler(event):
 
 @bot.on(events.NewMessage(pattern=r"^/ping$"))
 async def ping_handler(event):
-
-    uptime = datetime.now() - START_TIME
-
-    total_seconds = int(
-        uptime.total_seconds()
-    )
-
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-
-    config = get_user_config(
-        event.sender_id
-    )
-
-    firebase_ok = firebase_get("users") is not None
+    seconds = int((datetime.now() - START_TIME).total_seconds())
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
 
     await event.reply(
         "🟢 **BOT ONLINE**\n\n"
-        f"⏱️ Uptime: **{hours}h {minutes}m**\n"
-        f"👥 Public Multi-User: **ON**\n"
-        f"🔎 Live Search: **ON**\n"
-        f"🧠 Fuzzy Search: **ON**\n"
-        f"🔥 Firebase: **{'ON' if firebase_ok else 'OFF'}**\n"
-        f"🔗 Share Button: **ON**\n"
-        f"🛡️ Diagnostic: **ON**\n\n"
-        f"📢 Channel: "
-        f"{'Configured ✅' if config.get('channel_id') else 'Not Configured ❌'}\n"
-        f"👥 Group: "
-        f"{'Configured ✅' if config.get('group_id') else 'Not Configured ❌'}"
+        f"⏱️ Uptime: `{h}h {m}m`\n"
+        "👥 Public Multi-User: ✅\n"
+        "🔎 Channel Search: ✅\n"
+        "🧠 Fuzzy Match: ✅\n"
+        "🔥 Firebase: ✅"
     )
 
 
 # ============================================================
-# 🔎 MAIN GROUP SEARCH
-# ============================================================
-
-@bot.on(events.NewMessage(incoming=True))
-async def group_search_handler(event):
-
-    # Only groups
-    if not event.is_group:
-        return
-
-    # Ignore bot/system
-    if event.sender_id == bot.uid:
-        return
-
-    text = event.raw_text or ""
-
-    if not text.strip():
-        return
-
-    # Commands ignored
-    if text.startswith("/"):
-        return
-
-    # --------------------------------------------------------
-    # Get configuration
-    # --------------------------------------------------------
-
-    # First try current user configuration
-    config = get_user_config(
-        event.sender_id
-    )
-
-    # If user's own config not found,
-    # find owner/config associated with this group.
-    if config.get("group_id") != event.chat_id:
-
-        all_users = firebase_get("users")
-
-        config = {}
-
-        if isinstance(all_users, dict):
-
-            for uid, data in all_users.items():
-
-                if not isinstance(data, dict):
-                    continue
-
-                try:
-                    if int(data.get("group_id", 0)) == int(event.chat_id):
-                        config = data
-                        break
-                except Exception:
-                    continue
-
-    # --------------------------------------------------------
-    # NO MAPPING
-    # --------------------------------------------------------
-
-    if not config:
-
-        # Do not spam normal users.
-        # Only admins get diagnostic hint.
-        try:
-            permissions = await event.client.get_permissions(
-                event.chat_id,
-                event.sender_id
-            )
-
-            if permissions.is_admin:
-
-                await event.reply(
-                    "⚠️ **Group Mapping Missing**\n\n"
-                    "Is group ke liye channel configured nahi hai.\n"
-                    "Admin `/setup` run kare."
-                )
-
-        except Exception:
-            pass
-
-        return
-
-    # Make absolutely sure this is the mapped group
-    if int(config.get("group_id", 0)) != int(event.chat_id):
-        return
-
-    channel_id = config.get("channel_id")
-
-    if not channel_id:
-        return
-
-    # --------------------------------------------------------
-    # EXTRACT APP NAME
-    # --------------------------------------------------------
-
-    query = extract_app_query(text)
-
-    if not query or len(query) < 2:
-        return
-
-    logging.info(
-        "SEARCH | Group=%s | User=%s | Query=%s",
-        event.chat_id,
-        event.sender_id,
-        query
-    )
-
-    # --------------------------------------------------------
-    # RESOLVE CHANNEL
-    # --------------------------------------------------------
-
-    try:
-
-        channel = await bot.get_entity(
-            int(channel_id)
-        )
-
-    except Exception as e:
-
-        logging.error(
-            "CHANNEL RESOLVE ERROR: %s",
-            e
-        )
-
-        # Tell admin, not every user
-        try:
-            permissions = await event.client.get_permissions(
-                event.chat_id,
-                event.sender_id
-            )
-
-            if permissions.is_admin:
-
-                await event.reply(
-                    "❌ **Channel Resolve Error**\n\n"
-                    f"`{str(e)[:500]}`\n\n"
-                    "Bot ko target channel mein add/admin karo "
-                    "aur `/setup` dobara karo."
-                )
-
-        except Exception:
-            pass
-
-        return
-
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
-
-    try:
-
-        found = await search_channel(
-            channel,
-            query
-        )
-
-    except FloodWaitError as e:
-
-        logging.warning(
-            "FloodWait %s seconds",
-            e.seconds
-        )
-
-        return
-
-    except Exception as e:
-
-        logging.error(
-            "SEARCH ERROR: %s",
-            e
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # NOT FOUND
-    # --------------------------------------------------------
-
-    if not found:
-
-        # Do not send "not found" on every random message.
-        # User requested bot to stay quiet when unavailable.
-        return
-
-    # --------------------------------------------------------
-    # CREATE POST LINK
-    # --------------------------------------------------------
-
-    post_link = make_post_link(
-        channel,
-        found
-    )
-
-    if not post_link:
-        return
-
-    channel_title = getattr(
-        channel,
-        "title",
-        "Channel"
-    )
-
-    # --------------------------------------------------------
-    # SHARE BUTTON
-    # --------------------------------------------------------
-
-    share_url = (
-        "https://t.me/share/url"
-        "?url=" + requests.utils.quote(post_link, safe="")
-        "&text=" + requests.utils.quote(
-            f"{query.upper()} Download",
-            safe=""
-        )
-    )
-
-    buttons = [
-        [
-            Button.url(
-                "📥 OPEN POST",
-                post_link
-            ),
-            Button.url(
-                "↗️ SHARE",
-                share_url
-            )
-        ]
-    ]
-
-    # --------------------------------------------------------
-    # REPLY
-    # --------------------------------------------------------
-
-    reply_text = (
-        "👋 **Hello!**\n\n"
-        f"📥 **{query.upper()}** mil gaya.\n\n"
-        f"📢 Source: **{channel_title}**\n\n"
-        "👇 Download/Post open karne ke liye:"
-    )
-
-    try:
-
-        await event.reply(
-            reply_text,
-            buttons=buttons,
-            link_preview=False
-        )
-
-        logging.info(
-            "REPLIED | %s | post=%s",
-            query,
-            found.id
-        )
-
-    except Exception as e:
-
-        logging.error(
-            "REPLY ERROR: %s",
-            e
-        )
-
-
-# ============================================================
-# 👑 OWNER / LEGACY COMMAND PLACEHOLDER
-#
-# Existing Firebase filter commands can still be used.
+# /FILTER
+# Owner-only manual Firebase links
 # ============================================================
 
 @bot.on(events.NewMessage(pattern=r"^/filter\s+(.+?)\s+(https?://\S+)$"))
 async def filter_handler(event):
-
     if event.sender_id != OWNER_ID:
         return
 
     app_name = event.pattern_match.group(1).strip().lower()
     link = event.pattern_match.group(2).strip()
 
-    key = safe_key(app_name)
-
-    if firebase_put(
-        f"links/{key}",
-        link
-    ):
-
+    if firebase_put(f"links/{safe_key(app_name)}", link):
         await event.reply(
-            "✅ **Firebase Filter Saved**\n\n"
-            f"📱 App: **{app_name.upper()}**\n"
-            f"🔗 Link: {link}"
+            "✅ **FILTER SAVED**\n\n"
+            f"📱 `{app_name.upper()}`\n"
+            f"🔗 {link}"
         )
-
     else:
-
-        await event.reply(
-            "❌ Firebase save failed."
-        )
+        await event.reply("❌ Firebase save failed.")
 
 
 # ============================================================
-# 🗑️ /KILLPOST
-# Owner only
+# /KILLPOST
+# Owner-only reply-to-delete
 # ============================================================
 
 @bot.on(events.NewMessage(pattern=r"^/killpost$"))
-async def kill_post(event):
-
+async def killpost_handler(event):
     if event.sender_id != OWNER_ID:
         return
 
     if not event.is_reply:
         await event.reply(
-            "⚠️ Jis post ko delete karna hai usko reply karke `/killpost` bhejo."
+            "⚠️ Delete karne wale post ko reply karke `/killpost` bhejo."
         )
         return
 
     try:
-
-        replied = await event.get_reply_message()
-
+        reply = await event.get_reply_message()
+        await reply.delete()
         await event.delete()
-
-        await replied.delete()
-
     except Exception as e:
-
-        logging.error(
-            "Killpost error: %s",
-            e
-        )
+        logging.error("killpost: %s", e)
 
 
 # ============================================================
-# 🧹 OPTIONAL ROSE WELCOME CLEANER
+# MAIN GROUP SEARCH
+# IMPORTANT: mapping is based on GROUP ID, so every user in
+# the same configured group gets the same channel.
+# ============================================================
+
+@bot.on(events.NewMessage(incoming=True))
+async def group_search_handler(event):
+    if not event.is_group:
+        return
+
+    if event.sender_id == bot.uid:
+        return
+
+    text = (event.raw_text or "").strip()
+
+    if not text or text.startswith("/"):
+        return
+
+    # Setup messages are handled separately.
+    if event.sender_id in SETUP:
+        return
+
+    group_id = int(event.chat_id)
+    mapping = get_mapping(group_id)
+
+    if not mapping:
+        # Only inform admins. Normal users see no spam.
+        if await is_group_admin(event):
+            await event.reply(
+                "⚠️ Is group ka channel configured nahi hai.\n"
+                "Admin `/setup` run kare."
+            )
+        return
+
+    channel_id = mapping.get("channel_id")
+
+    if not channel_id:
+        return
+
+    query = extract_app_query(text)
+
+    if len(query) < 2:
+        return
+
+    logging.info(
+        "SEARCH group=%s user=%s query=%r",
+        group_id,
+        event.sender_id,
+        query
+    )
+
+    # Avoid multiple expensive searches at exactly the same time
+    # in one group.
+    lock = SEARCH_LOCKS.setdefault(group_id, asyncio.Lock())
+
+    async with lock:
+        try:
+            channel = CHANNEL_CACHE.get(int(channel_id))
+
+            if channel is None:
+                channel = await bot.get_entity(int(channel_id))
+                CHANNEL_CACHE[int(channel_id)] = channel
+
+            found, score = await search_channel(
+                channel,
+                query
+            )
+
+        except FloodWaitError as e:
+            logging.warning("FloodWait %ss", e.seconds)
+            return
+
+        except Exception as e:
+            logging.error("Main search error: %s", e)
+
+            if await is_group_admin(event):
+                await event.reply(
+                    "❌ **Search Error**\n\n"
+                    f"`{str(e)[:400]}`"
+                )
+            return
+
+    # --------------------------------------------------------
+    # Manual Firebase link fallback
+    # --------------------------------------------------------
+
+    if not found:
+        links = get_filter_links()
+        best_name = None
+        best_link = None
+        best = 0
+
+        for name, link in links.items():
+            s = similarity(query, str(name))
+            if s > best:
+                best = s
+                best_name = name
+                best_link = link
+
+        if best_link and best >= 75:
+            await event.reply(
+                "👋 **Hello!**\n\n"
+                f"📥 **{str(best_name).upper()}** available hai.\n\n"
+                f"👉 {best_link}",
+                link_preview=False
+            )
+        return
+
+    url = post_link(channel, found)
+
+    if not url:
+        return
+
+    title = getattr(channel, "title", "Channel")
+
+    share = share_link(
+        url,
+        f"{query.upper()} Download"
+    )
+
+    buttons = [
+        [
+            Button.url("📥 OPEN POST", url),
+            Button.url("↗️ SHARE", share),
+        ]
+    ]
+
+    reply = (
+        "👋 **Hello!**\n\n"
+        f"📥 **{query.upper()}** mil gaya.\n\n"
+        f"📢 Source: **{title}**\n"
+        f"🎯 Match: **{int(score)}%**\n\n"
+        "👇 Post open/share karo:"
+    )
+
+    try:
+        await event.reply(
+            reply,
+            buttons=buttons,
+            link_preview=False
+        )
+        logging.info(
+            "REPLIED query=%r post=%s score=%s",
+            query,
+            found.id,
+            int(score)
+        )
+    except Exception as e:
+        logging.error("Reply error: %s", e)
+
+
+# ============================================================
+# ROSE / JOIN MESSAGE CLEANER
 # ============================================================
 
 async def delete_later(message, seconds=300):
-
     await asyncio.sleep(seconds)
-
     try:
         await message.delete()
     except Exception:
@@ -1296,18 +911,13 @@ async def delete_later(message, seconds=300):
 
 @bot.on(events.NewMessage(incoming=True))
 async def welcome_cleaner(event):
-
     if not event.is_group:
         return
 
     try:
-
         sender = await event.get_sender()
 
-        if not sender:
-            return
-
-        if not getattr(sender, "bot", False):
+        if not sender or not getattr(sender, "bot", False):
             return
 
         if sender.id == bot.uid:
@@ -1315,163 +925,98 @@ async def welcome_cleaner(event):
 
         text = (event.raw_text or "").lower()
 
-        welcome_words = (
+        words = (
             "welcome",
             "joined",
             "made it",
-            "hey"
+            "hey",
         )
 
-        if any(
-            word in text
-            for word in welcome_words
-        ):
-
-            asyncio.create_task(
-                delete_later(
-                    event,
-                    300
-                )
-            )
+        if any(w in text for w in words):
+            asyncio.create_task(delete_later(event, 300))
 
     except Exception:
         pass
 
 
 # ============================================================
-# 🔄 SAFE GITHUB RESTART
+# GITHUB SAFE RESTART
 # ============================================================
 
 async def github_keep_alive():
-
     while True:
-
         try:
+            elapsed = datetime.now() - START_TIME
 
-            elapsed = (
-                datetime.now() -
-                START_TIME
-            )
+            if elapsed >= timedelta(hours=5, minutes=45):
+                token = os.environ.get("MY_GITHUB_TOKEN")
+                repo = os.environ.get("GITHUB_REPOSITORY")
 
-            if elapsed >= timedelta(
-                hours=5,
-                minutes=45
-            ):
-
-                print(
-                    "🔄 GitHub safe restart..."
-                )
-
-                github_token = os.environ.get(
-                    "MY_GITHUB_TOKEN"
-                )
-
-                repo_name = os.environ.get(
-                    "GITHUB_REPOSITORY"
-                )
-
-                if github_token and repo_name:
-
+                if token and repo:
                     url = (
-                        "https://api.github.com/repos/"
-                        f"{repo_name}/actions/workflows/"
-                        "run-bot.yml/dispatches"
+                        f"https://api.github.com/repos/{repo}/"
+                        "actions/workflows/run-bot.yml/dispatches"
                     )
 
                     headers = {
-                        "Accept":
-                        "application/vnd.github+json",
-                        "Authorization":
-                        f"Bearer {github_token}"
+                        "Accept": "application/vnd.github+json",
+                        "Authorization": f"Bearer {token}",
                     }
 
                     try:
-
-                        requests.post(
+                        r = requests.post(
                             url,
                             headers=headers,
                             json={"ref": "main"},
                             timeout=15
                         )
-
+                        logging.info(
+                            "GitHub restart dispatch: HTTP %s",
+                            r.status_code
+                        )
                     except Exception as e:
-
                         logging.error(
-                            "GitHub restart error: %s",
+                            "GitHub restart request: %s",
                             e
                         )
 
                 os._exit(0)
 
         except Exception as e:
-
-            logging.error(
-                "Keep alive error: %s",
-                e
-            )
+            logging.error("Keep-alive error: %s", e)
 
         await asyncio.sleep(600)
-
-
-# ============================================================
-# 🚀 MAIN
-# ============================================================
-
-async def main():
-
-    print("⏳ Starting Telegram Client...")
-
-    await bot.start(
-        bot_token=BOT_TOKEN
-    )
-
-    me = await bot.get_me()
-
-    print(
-        f"✅ Bot Started: @{me.username}"
-    )
-
-    print(
-        "🟢 PUBLIC MULTI-USER MODE"
-    )
-
-    print(
-        "🔎 SMART FUZZY SEARCH: ON"
-    )
-
-    print(
-        "🔗 SHARE BUTTON: ON"
-    )
-
-    print(
-        "🔥 FIREBASE: ON"
-    )
-
-    bot.loop.create_task(
-        github_keep_alive()
-    )
-
-    await bot.run_until_disconnected()
 
 
 # ============================================================
 # START
 # ============================================================
 
+async def main():
+    print("⏳ Starting Telegram client...")
+
+    await bot.start(bot_token=BOT_TOKEN)
+
+    me = await bot.get_me()
+
+    print(
+        f"✅ Bot started: @{getattr(me, 'username', 'unknown')}"
+    )
+    print("🟢 PUBLIC MULTI-USER MODE: ON")
+    print("🔎 SMART SEARCH: ON")
+    print("🧠 FUZZY MATCH: ON")
+    print("🔥 FIREBASE: ON")
+    print("🔗 SHARE BUTTON: ON")
+
+    bot.loop.create_task(github_keep_alive())
+
+    await bot.run_until_disconnected()
+
+
 if __name__ == "__main__":
-
     try:
-
-        bot.loop.run_until_complete(
-            main()
-        )
-
+        bot.loop.run_until_complete(main())
     except KeyboardInterrupt:
-
         print("🛑 Bot stopped.")
-
     except Exception as e:
-
-        print(
-            f"❌ FATAL ERROR: {e}"
-        )
+        print(f"❌ FATAL ERROR: {e}")

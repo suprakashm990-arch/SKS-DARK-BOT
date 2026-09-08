@@ -1,2 +1,2 @@
 Telethon==1.38.1
-requests>=2.31.0
+requests
